@@ -48,6 +48,8 @@ bash scripts/build-from-wsl.sh
 anchor build
 
 # Run full stake-settle-claim cycle on localnet
+# First time in WSL: create default wallet for tests
+bash scripts/setup-keypair.sh
 anchor test
 ```
 

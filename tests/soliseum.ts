@@ -21,6 +21,7 @@ describe("soliseum", () => {
   let userB: Keypair;
 
   let arenaPda: PublicKey;
+  let vaultPda: PublicKey;
   const FEE_BPS = 250; // 2.5%
   const STAKE_AMOUNT_A = new anchor.BN(1 * LAMPORTS_PER_SOL);
   const STAKE_AMOUNT_B = new anchor.BN(2 * LAMPORTS_PER_SOL);
@@ -43,6 +44,10 @@ describe("soliseum", () => {
       [Buffer.from("arena"), creator.publicKey.toBuffer()],
       program.programId
     );
+    [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), creator.publicKey.toBuffer()],
+      program.programId
+    );
   });
 
   it("Initializes the arena", async () => {
@@ -50,6 +55,7 @@ describe("soliseum", () => {
       .initializeArena(FEE_BPS)
       .accounts({
         arena: arenaPda,
+        vault: vaultPda,
         creator: creator.publicKey,
         oracle: oracle.publicKey,
         systemProgram: SystemProgram.programId,
@@ -84,6 +90,7 @@ describe("soliseum", () => {
       .placeStake(STAKE_AMOUNT_A, 0)
       .accounts({
         arena: arenaPda,
+        vault: vaultPda,
         stake: stakePda,
         user: userA.publicKey,
         systemProgram: SystemProgram.programId,
@@ -119,6 +126,7 @@ describe("soliseum", () => {
       .placeStake(STAKE_AMOUNT_B, 1)
       .accounts({
         arena: arenaPda,
+        vault: vaultPda,
         stake: stakePda,
         user: userB.publicKey,
         systemProgram: SystemProgram.programId,
@@ -165,6 +173,7 @@ describe("soliseum", () => {
       .claimReward()
       .accounts({
         arena: arenaPda,
+        vault: vaultPda,
         stake: stakePda,
         user: userA.publicKey,
         systemProgram: SystemProgram.programId,
@@ -207,6 +216,7 @@ describe("soliseum", () => {
         .claimReward()
         .accounts({
           arena: arenaPda,
+          vault: vaultPda,
           stake: stakePda,
           user: userA.publicKey,
           systemProgram: SystemProgram.programId,
@@ -227,11 +237,16 @@ describe("soliseum", () => {
       [Buffer.from("arena"), userA.publicKey.toBuffer()],
       program.programId
     );
+    const [newVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), userA.publicKey.toBuffer()],
+      program.programId
+    );
 
     await program.methods
       .initializeArena(FEE_BPS)
       .accounts({
         arena: newArenaPda,
+        vault: newVaultPda,
         creator: userA.publicKey,
         oracle: oracle.publicKey,
         systemProgram: SystemProgram.programId,
@@ -252,6 +267,7 @@ describe("soliseum", () => {
       .placeStake(new anchor.BN(LAMPORTS_PER_SOL), 0)
       .accounts({
         arena: newArenaPda,
+        vault: newVaultPda,
         stake: stakePda,
         user: userA.publicKey,
         systemProgram: SystemProgram.programId,

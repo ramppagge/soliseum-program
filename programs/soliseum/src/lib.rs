@@ -2,6 +2,8 @@
 #![allow(unexpected_cfgs)]
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program::invoke_signed;
+use anchor_lang::solana_program::system_instruction;
 use anchor_lang::system_program::{transfer, Transfer};
 
 declare_id!("DSabgEbjSc4ZYGL8ZkCoFiE9NFZgF1vGRmrsFFkBZiXz");
@@ -34,6 +36,29 @@ pub mod soliseum {
     ) -> Result<()> {
         require!(fee_bps <= BPS_DENOMINATOR as u16, SoliseumError::MathOverflow);
 
+        let (vault_pubkey, vault_bump) = Pubkey::find_program_address(
+            &[b"vault", ctx.accounts.creator.key().as_ref()],
+            ctx.program_id,
+        );
+        let vault = &ctx.accounts.vault;
+        if vault.lamports() == 0 {
+            invoke_signed(
+                &system_instruction::create_account(
+                    &ctx.accounts.creator.key(),
+                    &vault_pubkey,
+                    0,
+                    0,
+                    ctx.program_id,
+                ),
+                &[
+                    ctx.accounts.creator.to_account_info(),
+                    ctx.accounts.vault.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+                &[&[b"vault", ctx.accounts.creator.key().as_ref(), &[vault_bump]]],
+            )?;
+        }
+
         let arena = &mut ctx.accounts.arena;
         arena.creator = ctx.accounts.creator.key();
         arena.oracle = ctx.accounts.oracle.key();
@@ -62,7 +87,7 @@ pub mod soliseum {
 
         let cpi_accounts = Transfer {
             from: ctx.accounts.user.to_account_info(),
-            to: ctx.accounts.arena.to_account_info(),
+            to: ctx.accounts.vault.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
@@ -157,22 +182,25 @@ pub mod soliseum {
 
         stake.claimed = true;
 
-        let _arena_key = arena.key();
-        let seeds = &[
-            b"arena",
+        let (_, vault_bump) = Pubkey::find_program_address(
+            &[b"vault", arena.creator.as_ref()],
+            ctx.program_id,
+        );
+        let vault_seeds = &[
+            b"vault",
             arena.creator.as_ref(),
-            &[ctx.bumps.arena],
+            &[vault_bump],
         ];
-        let signer_seeds = &[&seeds[..]];
+        let vault_signer = &[&vault_seeds[..]];
 
         let cpi_accounts = Transfer {
-            from: ctx.accounts.arena.to_account_info(),
+            from: ctx.accounts.vault.to_account_info(),
             to: ctx.accounts.user.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.system_program.to_account_info(),
             cpi_accounts,
-            signer_seeds,
+            vault_signer,
         );
         transfer(cpi_ctx, total_payout_u64)?;
 
@@ -221,6 +249,11 @@ pub struct InitializeArena<'info> {
     )]
     pub arena: Account<'info, Arena>,
 
+    /// Vault PDA: holds staked SOL only (0 bytes data) so System Program allows transfer from it on claim
+    /// CHECK: Validated by seeds; created with space 0 in instruction
+    #[account(mut, seeds = [b"vault", creator.key().as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+
     #[account(mut)]
     pub creator: Signer<'info>,
 
@@ -241,6 +274,10 @@ pub struct PlaceStake<'info> {
         constraint = arena.status == ArenaStatus::Active @ SoliseumError::InvalidArenaState
     )]
     pub arena: Account<'info, Arena>,
+
+    #[account(mut, seeds = [b"vault", arena.creator.as_ref()], bump)]
+    /// CHECK: Vault PDA, holds SOL only
+    pub vault: UncheckedAccount<'info>,
 
     #[account(
         init_if_needed,
@@ -279,6 +316,10 @@ pub struct ClaimReward<'info> {
         constraint = arena.status == ArenaStatus::Settled @ SoliseumError::InvalidArenaState
     )]
     pub arena: Account<'info, Arena>,
+
+    #[account(mut, seeds = [b"vault", arena.creator.as_ref()], bump)]
+    /// CHECK: Vault PDA, holds SOL only (no data) so System Program allows transfer from it
+    pub vault: UncheckedAccount<'info>,
 
     #[account(
         mut,
