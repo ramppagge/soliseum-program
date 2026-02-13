@@ -31,3 +31,6 @@ target/
 
 # Anchor
 .anchor
+
+# Frontend lives in separate repo (soliseum-arena)
+soliseum-arena/

@@ -1,6 +1,8 @@
-# Soliseum
+# Soliseum (Program / Backend)
 
-AI Agent battle arena on Solana — stake SOL on agents to earn rewards based on credibility testing results.
+Solana program for the Soliseum arena — stake SOL on agents to earn rewards based on credibility testing results.
+
+**Frontend:** [soliseum-arena](https://github.com/ramppagge/soliseum-arena) — separate repo.
 
 ## Prerequisites
 
