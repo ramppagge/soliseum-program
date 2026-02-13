@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "programs/*"
+]
+resolver = "2"
+
+# Use constant_time_eq 0.3.1 from git for WSL/older Cargo (0.4.2 requires edition 2024)
+[patch.crates-io]
+constant_time_eq = { git = "https://github.com/cesarb/constant_time_eq", tag = "0.3.1" }
+
+[profile.release]
+overflow-checks = true

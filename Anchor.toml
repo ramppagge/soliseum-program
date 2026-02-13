@@ -1,0 +1,23 @@
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+soliseum = "DSabgEbjSc4ZYGL8ZkCoFiE9NFZgF1vGRmrsFFkBZiXz"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[hooks]
+# Ensure SBF output dir exists before build (avoids "Unable to get file metadata" when path is missing)
+# Note: This uses Unix mkdir -p. On Windows, use scripts/build-windows.ps1 which handles this properly
+pre-build = "mkdir -p target/sbf-solana-solana/release"
