@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { BattleCard } from "@/components/BattleCard";
@@ -6,25 +6,67 @@ import { AgentProfile } from "@/components/AgentProfile";
 import { StakingPanel } from "@/components/StakingPanel";
 import { battles } from "@/data/mockData";
 import type { Agent, Battle } from "@/data/mockData";
-import { useActiveArenas } from "@/hooks/useApi";
-import { arenaToBattle } from "@/lib/api";
-import { Swords, Activity, Users, Zap, TrendingUp } from "lucide-react";
+import { useActiveArenas, useSettledArenas, useGlobalStats } from "@/hooks/useApi";
+import { arenaToBattle, fetchResetArena } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { Swords, Activity, Users, Zap, TrendingUp, RotateCcw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+
+function isArenaAddress(id: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(id);
+}
 
 const Index = () => {
   const navigate = useNavigate();
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [stakingBattle, setStakingBattle] = useState<Battle | null>(null);
+  const [resetLoading, setResetLoading] = useState<string | null>(null);
+  const { token, login, isLoading: authLoading } = useAuth();
+  const { connected } = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
 
-  const { data: apiArenas } = useActiveArenas();
+  const { data: apiArenas, refetch: refetchActive } = useActiveArenas();
+  const { data: apiSettledArenas, refetch: refetchSettled } = useSettledArenas();
+  const { data: globalStats } = useGlobalStats();
   const apiLiveBattles = useMemo(
     () => (apiArenas ?? []).map(arenaToBattle),
     [apiArenas]
+  );
+  const apiConcludedBattles = useMemo(
+    () => (apiSettledArenas ?? []).map(arenaToBattle),
+    [apiSettledArenas]
   );
 
   const mockLive = battles.filter((b) => b.status === "live");
   const liveBattles = apiLiveBattles.length > 0 ? apiLiveBattles : mockLive;
   const pendingBattles = battles.filter((b) => b.status === "pending");
-  const concludedBattles = battles.filter((b) => b.status === "concluded");
+  const mockConcluded = battles.filter((b) => b.status === "concluded");
+  const concludedBattles = apiConcludedBattles.length > 0 ? apiConcludedBattles : mockConcluded;
+
+  const handleResetArena = useCallback(
+    async (arenaAddress: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!token) {
+        connected ? login() : setWalletModalVisible(true);
+        return;
+      }
+      setResetLoading(arenaAddress);
+      try {
+        await fetchResetArena(arenaAddress, token);
+        toast.success("Arena reset! It will appear in Live battles.");
+        refetchSettled();
+        refetchActive();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Reset failed");
+      } finally {
+        setResetLoading(null);
+      }
+    },
+    [token, connected, login, setWalletModalVisible, refetchSettled, refetchActive]
+  );
 
   const totalSpectators = liveBattles.reduce((s, b) => s + (b.spectators ?? 0), 0) +
     pendingBattles.reduce((s, b) => s + b.spectators, 0);
@@ -69,7 +111,7 @@ const Index = () => {
             initial={{ x: 20, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             transition={{ delay: 0.2 }}
-            className="flex flex-wrap items-center gap-4 lg:gap-6"
+            className="flex flex-wrap items-center gap-4 lg:gap-6 overflow-x-auto pb-2 sm:pb-0"
           >
             <motion.div 
               whileHover={{ scale: 1.05 }}
@@ -115,6 +157,31 @@ const Index = () => {
           </motion.div>
         </div>
       </motion.header>
+
+      {/* Global Stats bar - social proof */}
+      {globalStats && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.25 }}
+          className="relative z-10 border-b border-border/50 bg-background/30 backdrop-blur-sm"
+        >
+          <div className="px-4 py-2 flex flex-wrap items-center justify-center gap-4 sm:gap-8 text-xs text-muted-foreground">
+            <span>
+              <span className="font-display font-bold text-accent">{globalStats.totalSolWon.toFixed(1)} SOL</span>
+              {" won by patrons"}
+            </span>
+            <span>
+              <span className="font-display font-bold text-foreground">{globalStats.battlesSettled}</span>
+              {" battles settled"}
+            </span>
+            <span>
+              <span className="font-display font-bold text-secondary">{globalStats.totalStakers}</span>
+              {" stakers"}
+            </span>
+          </div>
+        </motion.div>
+      )}
 
       <main className="relative z-10 p-4 md:p-6 lg:p-8 space-y-10 md:space-y-12">
         {/* Live section */}
@@ -195,12 +262,12 @@ const Index = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.7 }}
           >
-            <div className="flex items-center gap-3 mb-6">
+            <div className="flex items-center gap-3 mb-6 flex-wrap">
               <div className="w-2 h-2 rounded-full bg-muted-foreground" />
               <h2 className="font-display text-lg md:text-xl font-bold tracking-wider text-muted-foreground">
                 CONCLUDED BATTLES
               </h2>
-              <div className="flex-1 h-px bg-gradient-to-r from-muted-foreground/30 to-transparent" />
+              <div className="flex-1 h-px bg-gradient-to-r from-muted-foreground/30 to-transparent min-w-[60px]" />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
               {concludedBattles.map((battle, i) => (
@@ -210,11 +277,24 @@ const Index = () => {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.05 + 0.8 }}
                   whileHover={{ y: -2 }}
+                  className="relative"
                 >
                   <BattleCard
                     battle={battle}
-                    onClick={() => navigate(`/arena/battle/${battle.id}/result`)}
+                    onClick={() => navigate(`/arena/battle/${battle.id}`)}
                   />
+                  {isArenaAddress(battle.id) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="absolute top-3 right-3 z-20 font-display"
+                      disabled={!!resetLoading || (token ? false : authLoading)}
+                      onClick={(e) => handleResetArena(battle.id, e)}
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                      {resetLoading === battle.id ? "Resetting..." : "Reset Arena"}
+                    </Button>
+                  )}
                 </motion.div>
               ))}
             </div>

@@ -43,6 +43,18 @@ export const startBattleBody = z.object({
   winProbabilityA: z.number().min(0).max(1).optional(),
 });
 
+// ─── POST /api/arena/reset ───────────────────────────────────────────────────
+
+export const resetArenaBody = z.object({
+  arenaAddress: solanaAddress,
+});
+
+// ─── POST /api/arena/sync ────────────────────────────────────────────────────
+
+export const syncArenaBody = z.object({
+  arenaAddress: solanaAddress,
+});
+
 // ─── GET /api/arena/active ───────────────────────────────────────────────────
 
 export const activeArenasQuery = z.object({

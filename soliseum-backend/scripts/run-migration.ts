@@ -26,24 +26,33 @@ async function main() {
     const [{ now }] = await sql`SELECT now()`;
     console.log(`Connected! Server time: ${now}`);
 
-    // Read and execute the migration SQL file
-    const migrationPath = path.join(__dirname, "..", "drizzle", "0000_soliseum_schema.sql");
-    const migrationSql = fs.readFileSync(migrationPath, "utf-8");
+    const migrationsDir = path.join(__dirname, "..", "drizzle");
+    const migrations = [
+      "0000_soliseum_schema.sql",
+      "0001_add_stakes_indexes.sql",
+    ];
 
-    console.log("Running migration: 0000_soliseum_schema.sql ...");
+    for (const file of migrations) {
+      const migrationPath = path.join(migrationsDir, file);
+      if (!fs.existsSync(migrationPath)) {
+        console.log(`Skipping ${file} (not found)`);
+        continue;
+      }
+      const migrationSql = fs.readFileSync(migrationPath, "utf-8");
+      console.log(`\nRunning migration: ${file} ...`);
 
-    // Split by semicolons and execute each statement
-    const statements = migrationSql
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && !s.startsWith("--"));
+      const statements = migrationSql
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0 && !s.startsWith("--"));
 
-    for (const statement of statements) {
-      console.log(`  Executing: ${statement.substring(0, 60)}...`);
-      await sql.unsafe(statement);
+      for (const statement of statements) {
+        console.log(`  Executing: ${statement.substring(0, 60)}...`);
+        await sql.unsafe(statement);
+      }
     }
 
-    console.log("\nMigration completed successfully!");
+    console.log("\nMigrations completed successfully!");
   } catch (err) {
     console.error("Migration failed:", err);
     process.exit(1);

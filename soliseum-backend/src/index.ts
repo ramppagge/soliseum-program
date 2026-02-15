@@ -18,14 +18,20 @@ import type { StartBattlePayload } from "./types";
 import { handleSolanaWebhook } from "./webhooks/solanaWebhook";
 import {
   getActiveArenas,
+  getArenaByAddress,
+  getSettledArenas,
+  invalidateArenaCaches,
   getLeaderboard,
   getUserHistory,
   getAgentByPubkey,
+  getGlobalStats,
 } from "./api/routes";
 import {
   validate,
   startBattleBody,
   testBattleBody,
+  resetArenaBody,
+  syncArenaBody,
   activeArenasQuery,
   leaderboardQuery,
   userHistoryParams,
@@ -113,6 +119,13 @@ async function runBattle(payload: StartBattlePayload): Promise<{ winner: number;
     throw e;
   }
 
+  // Update DB immediately so arena moves to Concluded (for testing; webhook also does this)
+  const { applySettleGame } = await import("./webhooks/indexerService");
+  await applySettleGame(arenaAddress, result.winner).catch((e) =>
+    console.warn("[runBattle] applySettleGame:", (e as Error).message)
+  );
+  invalidateArenaCaches();
+
   return { winner: result.winner, txSignature };
 }
 
@@ -140,10 +153,105 @@ app.post(
 
 // ─── Public data endpoints (rate-limited + validated) ────────────────────────
 app.get(
+  "/api/stats/global",
+  apiLimiter,
+  (req, res) => getGlobalStats(req, res)
+);
+
+app.get(
   "/api/arena/active",
   apiLimiter,
   validate({ query: activeArenasQuery }),
   (req, res) => getActiveArenas(req, res)
+);
+
+app.get(
+  "/api/arena/settled",
+  apiLimiter,
+  (req, res) => getSettledArenas(req, res)
+);
+
+app.get(
+  "/api/arena/:address",
+  apiLimiter,
+  (req, res) => getArenaByAddress(req, res)
+);
+
+app.post(
+  "/api/arena/sync",
+  apiLimiter,
+  validate({ body: syncArenaBody }),
+  async (req, res) => {
+    try {
+      const { arenaAddress } = req.body as { arenaAddress: string };
+      const { status, winner } = await solanaService.getArenaOnChainState(arenaAddress);
+      const { syncArenaFromChain } = await import("./webhooks/indexerService");
+      await syncArenaFromChain(arenaAddress, status, winner);
+      invalidateArenaCaches();
+      res.json({ ok: true, status: status === 1 ? "Live" : status === 2 ? "Settled" : "Unknown", winner });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[POST /api/arena/sync]", message);
+      res.status(400).json({ ok: false, error: message });
+    }
+  }
+);
+
+app.post(
+  "/api/arena/reset",
+  apiLimiter,
+  requireAuth,
+  validate({ body: resetArenaBody }),
+  async (req, res) => {
+    try {
+      const { arenaAddress } = req.body as { arenaAddress: string };
+      const onChainStatus = await solanaService.getArenaStatus(arenaAddress);
+      const { applyResetArena } = await import("./webhooks/indexerService");
+      let txSignature: string | undefined;
+
+      if (onChainStatus === 1) {
+        // Already Active on-chain (e.g. was reset before but DB stayed Settled). Sync DB only.
+        await applyResetArena(arenaAddress).catch((e) =>
+          console.warn("[POST /api/arena/reset] DB sync:", (e as Error).message)
+        );
+        invalidateArenaCaches();
+        return res.json({ ok: true, txSignature: undefined, alreadyActive: true });
+      }
+
+      if (onChainStatus !== 2) {
+        return res.status(400).json({
+          ok: false,
+          error: `Arena must be Settled to reset (current status: ${onChainStatus}). Only settled arenas can be reset.`,
+        });
+      }
+
+      try {
+        txSignature = await solanaService.resetArenaOnChain(arenaAddress);
+      } catch (resetErr) {
+        const errMsg = resetErr instanceof Error ? resetErr.message : String(resetErr);
+        if (errMsg.includes("0x1773") || errMsg.includes("6003") || errMsg.includes("InvalidArenaState")) {
+          const nowStatus = await solanaService.getArenaStatus(arenaAddress);
+          if (nowStatus === 1) {
+            await applyResetArena(arenaAddress).catch((e) =>
+              console.warn("[POST /api/arena/reset] DB sync:", (e as Error).message)
+            );
+            invalidateArenaCaches();
+            return res.json({ ok: true, txSignature: undefined, alreadyActive: true });
+          }
+        }
+        throw resetErr;
+      }
+      await applyResetArena(arenaAddress).catch((e) =>
+        console.warn("[POST /api/arena/reset] DB update:", (e as Error).message)
+      );
+      invalidateArenaCaches();
+      res.json({ ok: true, txSignature });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[POST /api/arena/reset]", message);
+      res.status(400).json({ ok: false, error: message });
+    }
+  }
 );
 
 app.get(
@@ -284,6 +392,7 @@ app.get(["/", ""], (_req, res) => {
       "POST /api/auth/nonce": "get auth nonce (body: walletAddress)",
       "POST /api/auth/verify": "verify signature (body: walletAddress, signature, nonce)",
       "POST /battle/start": "start battle [auth required] (body: battleId, arenaAddress, agentA, agentB, gameMode)",
+      "POST /api/arena/reset": "reset settled arena to Active [auth required] (body: arenaAddress) - vault must be empty",
       "POST /api/webhooks/solana": "Helius/Shyft webhook (header: x-helius-webhook-secret)",
       "GET /api/arena/active": "live battles with pool sizes",
       "GET /api/leaderboard": "top agents by credibility",

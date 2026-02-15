@@ -11,6 +11,7 @@ export interface ArenaActive {
   arenaAddress: string;
   status: string;
   totalPool: number;
+  winnerSide?: number | null;
   agentAPool: number;
   agentBPool: number;
   agentAPubkey: string | null;
@@ -104,6 +105,31 @@ export async function fetchActiveArenas(): Promise<ArenaActive[]> {
   return fetchApi<ArenaActive[]>("/api/arena/active");
 }
 
+/** GET /api/arena/settled - Settled arenas for concluded section */
+export async function fetchSettledArenas(): Promise<ArenaActive[]> {
+  return fetchApi<ArenaActive[]>("/api/arena/settled");
+}
+
+/** GET /api/arena/:address - Single arena (Live or Settled) */
+export async function fetchArenaByAddress(address: string): Promise<ArenaActive | null> {
+  try {
+    return await fetchApi<ArenaActive>(`/api/arena/${encodeURIComponent(address)}`);
+  } catch {
+    return null;
+  }
+}
+
+export interface GlobalStats {
+  totalSolWon: number;
+  battlesSettled: number;
+  totalStakers: number;
+}
+
+/** GET /api/stats/global */
+export async function fetchGlobalStats(): Promise<GlobalStats> {
+  return fetchApi<GlobalStats>("/api/stats/global");
+}
+
 /** GET /api/leaderboard */
 export async function fetchLeaderboard(limit = 50): Promise<LeaderboardAgent[]> {
   return fetchApi<LeaderboardAgent[]>(`/api/leaderboard?limit=${limit}`);
@@ -179,18 +205,64 @@ export function arenaToBattle(arena: ArenaActive): import("@/data/mockData").Bat
   const total = arena.agentAPool + arena.agentBPool;
   const winProbA = total > 0 ? Math.round((arena.agentAPool / total) * 100) : 50;
   const winProbB = 100 - winProbA;
+  const agentA = agentFromPubkey(arena.agentAPubkey, "Agent A");
+  const agentB = agentFromPubkey(arena.agentBPubkey, "Agent B");
+  const isSettled = arena.status === "Settled";
+  const winnerSide = arena.winnerSide;
   return {
     id: arena.arenaAddress,
     gameType: "Trading Blitz",
-    status: "live",
-    agentA: agentFromPubkey(arena.agentAPubkey, "Agent A"),
-    agentB: agentFromPubkey(arena.agentBPubkey, "Agent B"),
+    status: isSettled ? "concluded" : "live",
+    agentA,
+    agentB,
     winProbA,
     winProbB,
     prizePool: arena.totalPool,
-    startTime: arena.startTime ? new Date(arena.startTime).toLocaleTimeString() : "Live",
+    startTime: arena.startTime ? new Date(arena.startTime).toLocaleTimeString() : isSettled ? "Ended" : "Live",
     spectators: 0,
+    ...(isSettled && winnerSide !== undefined && winnerSide !== null && {
+      result: {
+        winnerId: winnerSide === 0 ? agentA.id : agentB.id,
+        victoryMetric: `Winner: ${winnerSide === 0 ? agentA.name : agentB.name}`,
+      },
+    }),
   };
+}
+
+/** POST /api/arena/sync - Sync arena status from on-chain to DB (fixes stale Live/Settled mismatch) */
+export async function fetchSyncArena(arenaAddress: string): Promise<{ ok: boolean; status?: string; error?: string }> {
+  try {
+    const res = await fetch(`${API_URL}/api/arena/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arenaAddress }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; status?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? `Sync failed: ${res.statusText}`);
+    return data;
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** POST /api/arena/reset - requires auth token. Resets settled arena to Active. */
+export async function fetchResetArena(
+  arenaAddress: string,
+  token: string
+): Promise<{ ok: boolean; txSignature?: string; error?: string }> {
+  const res = await fetch(`${API_URL}/api/arena/reset`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ arenaAddress }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; txSignature?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error ?? `Reset failed: ${res.statusText}`);
+  }
+  return data;
 }
 
 /** POST /battle/start - requires auth token */

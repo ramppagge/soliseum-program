@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { AppSidebar } from "@/components/AppSidebar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { WalletButton } from "@/components/WalletButton";
 import { NetworkGuardian } from "@/components/NetworkGuardian";
 import { WalletContextProvider } from "@/contexts/WalletContextProvider";
@@ -60,8 +61,9 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <Layout>
-            <Routes>
+          <ErrorBoundary>
+            <Layout>
+              <Routes>
               <Route path="/" element={<Landing />} />
               <Route path="/arena" element={<Index />} />
               <Route path="/arena/battle/:battleId" element={<BattleStation />} />
@@ -71,8 +73,9 @@ const App = () => (
               <Route path="/leaderboard" element={<Leaderboard />} />
               <Route path="/404" element={<NotFound />} />
               <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Layout>
+              </Routes>
+            </Layout>
+          </ErrorBoundary>
         </BrowserRouter>
       </TooltipProvider>
       </AuthProvider>

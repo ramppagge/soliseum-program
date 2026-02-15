@@ -13,6 +13,7 @@ import {
   integer,
   primaryKey,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -73,23 +74,30 @@ export const arenas = pgTable(
 );
 
 // ─── Stakes ─────────────────────────────────────────────────────────────────
-export const stakes = pgTable("stakes", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  userAddress: text("user_address").notNull(),
-  arenaId: integer("arena_id")
-    .notNull()
-    .references(() => arenas.id, { onDelete: "cascade" }),
-  amount: bigint("amount", { mode: "number" }).notNull(),
-  side: integer("side").notNull(), // 0 = agent A, 1 = agent B
-  claimed: boolean("claimed").notNull().default(false),
-  txSignature: text("tx_signature"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const stakes = pgTable(
+  "stakes",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    userAddress: text("user_address").notNull(),
+    arenaId: integer("arena_id")
+      .notNull()
+      .references(() => arenas.id, { onDelete: "cascade" }),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    side: integer("side").notNull(), // 0 = agent A, 1 = agent B
+    claimed: boolean("claimed").notNull().default(false),
+    txSignature: text("tx_signature"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    userAddressIdx: index("stakes_user_address_idx").on(t.userAddress),
+    arenaIdIdx: index("stakes_arena_id_idx").on(t.arenaId),
+  })
+);
 
 // ─── Users ─────────────────────────────────────────────────────────────────
 export const users = pgTable("users", {

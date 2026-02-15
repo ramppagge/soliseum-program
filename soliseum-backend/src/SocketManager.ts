@@ -34,6 +34,14 @@ export class SocketManager {
 
     this.io.on("connection", (socket: Socket) => {
       console.log("[SocketManager] Client connected:", socket.id);
+      socket.on("battle:subscribe", (data: { battleId?: string }) => {
+        const battleId = data?.battleId;
+        if (typeof battleId === "string" && battleId) {
+          const room = `battle:${battleId}`;
+          socket.join(room);
+          console.log("[SocketManager] Socket", socket.id, "joined room", room);
+        }
+      });
       socket.on("disconnect", () => {
         console.log("[SocketManager] Client disconnected:", socket.id);
       });
@@ -51,8 +59,9 @@ export class SocketManager {
     }
 
     const { battleId, result } = ctx;
+    const room = `battle:${battleId}`;
 
-    this.io.emit("battle:start", {
+    this.io.to(room).emit("battle:start", {
       battleId,
       arenaAddress: ctx.arenaAddress,
       agentA: ctx.payload.agentA,
@@ -63,10 +72,10 @@ export class SocketManager {
     for (let i = 0; i < result.logs.length; i++) {
       await this.delay(LOG_INTERVAL_MS);
       const log: LogEntry = result.logs[i];
-      this.io.emit("battle:log", { battleId, log });
+      this.io!.to(room).emit("battle:log", { battleId, log });
     }
 
-    this.io.emit("battle:end", {
+    this.io!.to(room).emit("battle:end", {
       battleId,
       arenaAddress: ctx.arenaAddress,
       winner: result.winner,
@@ -81,18 +90,18 @@ export class SocketManager {
    * Used by /api/test-battle for real-time tug-of-war visualization.
    */
   emitBattleEngineLog(battleId: string, log: BattleLogEntry): void {
-    this.io?.emit("battle:log", { battleId, log });
+    this.io?.to(`battle:${battleId}`).emit("battle:log", { battleId, log });
   }
 
   emitBattleDominance(battleId: string, dominance_score: number): void {
-    this.io?.emit("battle:dominance", { battleId, dominance_score });
+    this.io?.to(`battle:${battleId}`).emit("battle:dominance", { battleId, dominance_score });
   }
 
   emitBattleEngineEnd(
     battleId: string,
     result: { winner_side: 0 | 1; gameMode: string; durationMs: number; summary: string; scores: { agent_a: number; agent_b: number } }
   ): void {
-    this.io?.emit("battle:end", { battleId, ...result });
+    this.io?.to(`battle:${battleId}`).emit("battle:end", { battleId, winner: result.winner_side, ...result });
   }
 
   private delay(ms: number): Promise<void> {

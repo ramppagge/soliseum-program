@@ -32,6 +32,9 @@ target/
 # Anchor
 .anchor
 
+# Solana CLI (local install, not for repo)
+solana/
+
 # Frontend: include for Vercel deploy (Root Directory: soliseum-arena)
 # soliseum-arena/
 

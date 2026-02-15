@@ -120,6 +120,28 @@ pub mod soliseum {
         Ok(())
     }
 
+    /// Reset a settled arena to Active so it can be used for another battle.
+    /// Oracle only. Vault must be empty (all rewards claimed).
+    pub fn reset_arena(ctx: Context<ResetArena>) -> Result<()> {
+        require!(
+            ctx.accounts.arena.status == ArenaStatus::Settled,
+            SoliseumError::InvalidArenaState
+        );
+        require!(
+            ctx.accounts.vault.lamports() == 0,
+            SoliseumError::InvalidArenaState
+        );
+
+        let arena = &mut ctx.accounts.arena;
+        arena.status = ArenaStatus::Active;
+        arena.winner = None;
+        arena.total_pool = 0;
+        arena.agent_a_pool = 0;
+        arena.agent_b_pool = 0;
+
+        Ok(())
+    }
+
     /// Settle the game with the winner. Oracle only.
     pub fn settle_game(ctx: Context<SettleGame>, winner: u8) -> Result<()> {
         require!(winner <= 1, SoliseumError::InvalidArenaState);
@@ -292,6 +314,23 @@ pub struct PlaceStake<'info> {
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ResetArena<'info> {
+    #[account(
+        mut,
+        seeds = [b"arena", arena.creator.as_ref()],
+        bump,
+        constraint = arena.oracle == oracle.key() @ SoliseumError::UnauthorizedOracle
+    )]
+    pub arena: Account<'info, Arena>,
+
+    #[account(mut, seeds = [b"vault", arena.creator.as_ref()], bump)]
+    /// CHECK: Vault PDA; we only check lamports == 0
+    pub vault: UncheckedAccount<'info>,
+
+    pub oracle: Signer<'info>,
 }
 
 #[derive(Accounts)]

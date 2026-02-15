@@ -32,6 +32,10 @@ function encodeSettleGameInstruction(winner: number): Buffer {
   return data;
 }
 
+function encodeResetArenaInstruction(): Buffer {
+  return getInstructionDiscriminator("reset_arena");
+}
+
 function loadOracleKeypair(): Keypair {
   const encoded = process.env.ORACLE_PRIVATE_KEY;
   if (!encoded || encoded === "") {
@@ -75,9 +79,34 @@ export class SolanaService {
     return this.oracleKeypair;
   }
 
+  /** Arena status enum from program (must match lib.rs ArenaStatus) */
+  private static readonly ARENA_STATUS = { Pending: 0, Active: 1, Settled: 2, Cancelled: 3 } as const;
+
+  /** Fetch arena status from chain. Status byte at offset 96 (after 8 discriminator + 88 arena fields). */
+  async getArenaStatus(arenaAddress: string): Promise<number> {
+    const info = await this.connection.getAccountInfo(new PublicKey(arenaAddress));
+    if (!info?.data || info.data.length < 97) {
+      throw new Error("Arena account not found or invalid");
+    }
+    return info.data[96] as number;
+  }
+
+  /** Fetch arena status and winner from chain for DB sync. */
+  async getArenaOnChainState(arenaAddress: string): Promise<{ status: number; winner: number | null }> {
+    const info = await this.connection.getAccountInfo(new PublicKey(arenaAddress));
+    if (!info?.data || info.data.length < 99) {
+      throw new Error("Arena account not found or invalid");
+    }
+    const status = info.data[96] as number;
+    const winnerTag = info.data[97] as number;
+    const winner = winnerTag === 1 ? (info.data[98] as number) : null;
+    return { status, winner };
+  }
+
   /**
    * Build and send the settle_game instruction. Oracle must match the arena's oracle.
    * winnerSide: 0 = agent A, 1 = agent B.
+   * Throws clear error if arena is already Settled (one battle per arena; use reset first).
    */
   async settleGameOnChain(
     arenaAddress: string,
@@ -85,6 +114,18 @@ export class SolanaService {
   ): Promise<string> {
     if (winnerSide !== 0 && winnerSide !== 1) {
       throw new Error("winnerSide must be 0 or 1");
+    }
+
+    const status = await this.getArenaStatus(arenaAddress);
+    if (status === SolanaService.ARENA_STATUS.Settled) {
+      throw new Error(
+        "Arena already settled. Each arena supports one battle. Run reset first (POST /api/arena/reset) or create a new arena."
+      );
+    }
+    if (status !== SolanaService.ARENA_STATUS.Active) {
+      throw new Error(
+        `Arena must be Active to settle (current status: ${status}). Only Active arenas can be settled.`
+      );
     }
 
     const arenaPubkey = new PublicKey(arenaAddress);
@@ -127,6 +168,57 @@ export class SolanaService {
     }
 
     throw lastError ?? new Error("settle_game failed after retries");
+  }
+
+  /**
+   * Reset a settled arena to Active so it can be used for another battle.
+   * Vault must be empty (all rewards claimed). Requires program with reset_arena instruction.
+   */
+  async resetArenaOnChain(arenaAddress: string): Promise<string> {
+    const arenaPubkey = new PublicKey(arenaAddress);
+    const info = await this.connection.getAccountInfo(arenaPubkey);
+    if (!info?.data || info.data.length < 41) {
+      throw new Error("Arena account not found or invalid");
+    }
+    const status = info.data[96] as number;
+    if (status !== SolanaService.ARENA_STATUS.Settled) {
+      throw new Error(
+        `Arena must be Settled to reset (current status: ${status}). Only settled arenas can be reset.`
+      );
+    }
+    const creatorBytes = info.data.subarray(8, 40);
+    const creatorPubkey = new PublicKey(creatorBytes);
+
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), creatorPubkey.toBuffer()],
+      PROGRAM_ID
+    );
+    const vaultBalance = await this.connection.getBalance(vaultPda);
+    if (vaultBalance > 0) {
+      throw new Error(
+        `Vault must be empty to reset. Claim all rewards first (vault has ${vaultBalance / 1e9} SOL).`
+      );
+    }
+
+    const oracle = this.getOracle();
+
+    const data = encodeResetArenaInstruction();
+    const keys = [
+      { pubkey: arenaPubkey, isSigner: false, isWritable: true },
+      { pubkey: vaultPda, isSigner: false, isWritable: true },
+      { pubkey: oracle.publicKey, isSigner: true, isWritable: false },
+    ];
+
+    const ix = new TransactionInstruction({ keys, programId: PROGRAM_ID, data });
+    const tx = new Transaction().add(ix);
+    const sig = await sendAndConfirmTransaction(
+      this.connection,
+      tx,
+      [oracle],
+      { commitment: "confirmed", maxRetries: 5, preflightCommitment: "confirmed" }
+    );
+    console.log("[SolanaService] reset_arena confirmed:", sig);
+    return sig;
   }
 
   private delay(ms: number): Promise<void> {

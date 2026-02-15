@@ -1,12 +1,42 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { battles, type Battle, type Agent } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Share2 } from "lucide-react";
+import { toast } from "sonner";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { PublicKey } from "@solana/web3.js";
+import { buildClaimRewardInstruction, fetchStakeFromChain } from "@/lib/solanaProgram";
+import { useActiveArenas } from "@/hooks/useApi";
+import { arenaToBattle, fetchArenaByAddress, fetchUserHistory, type ArenaActive, type UserStakeHistory } from "@/lib/api";
+
+const LAMPORTS_PER_SOL = 1e9;
+
+/** Compute payout from program formula: stake + stake * net_loser_pool / total_winner_pool */
+function computePayoutLamports(
+  stakeLamports: number,
+  totalWinnerPoolLamports: number,
+  totalLoserPoolLamports: number,
+  feeBps = 200
+): number {
+  if (totalWinnerPoolLamports <= 0) return stakeLamports;
+  const netLoserPool = Math.floor(
+    (totalLoserPoolLamports * (10000 - feeBps)) / 10000
+  );
+  const userReward = Math.floor(
+    (stakeLamports * netLoserPool) / totalWinnerPoolLamports
+  );
+  return stakeLamports + userReward;
+}
 
 /** Solana green for victory */
 const SOLANA_GREEN = "#14F195";
+
+function isArenaAddress(id: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(id);
+}
 
 /** Location state when navigating from BattleStation or Arena */
 export interface VictoryHallState {
@@ -68,24 +98,93 @@ export default function VictoryHall() {
   const navigate = useNavigate();
   const location = useLocation();
   const state = (location.state ?? {}) as VictoryHallState;
+  const { data: apiArenas } = useActiveArenas();
+  const [arenaByAddress, setArenaByAddress] = useState<ArenaActive | null | undefined>(undefined);
+  const apiBattles = useMemo(
+    () => (apiArenas ?? []).map(arenaToBattle),
+    [apiArenas]
+  );
+  const apiBattle = apiBattles.find((b) => b.id === battleId);
+  const battleFromAddress = arenaByAddress != null ? arenaToBattle(arenaByAddress) : undefined;
+  const mockBattle = battles.find((b) => b.id === battleId);
+  const battle: Battle | undefined = apiBattle ?? battleFromAddress ?? mockBattle;
 
-  const battle = battles.find((b) => b.id === battleId);
+  const needsArenaFetch = !!(battleId && isArenaAddress(battleId) && !apiBattle);
+  useEffect(() => {
+    if (!needsArenaFetch) return;
+    fetchArenaByAddress(battleId!).then((a) => setArenaByAddress(a ?? null));
+  }, [battleId, needsArenaFetch]);
+  const { connection } = useConnection();
+  const { publicKey, sendTransaction, connected } = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
   const [claimStatus, setClaimStatus] = useState<"idle" | "pending" | "claimed">("idle");
   const [txSignature, setTxSignature] = useState<string | null>(null);
   const [showConfetti, setShowConfetti] = useState(false);
   const confettiDone = useRef(false);
+  const [userHistory, setUserHistory] = useState<UserStakeHistory[] | null>(null);
+  const [chainStake, setChainStake] = useState<{ amount: number; side: number; claimed: boolean } | null>(null);
 
-  const userWon = state.userBackedWinner ?? true;
-  const userStake = state.userStake ?? 10;
-  const totalPool = battle?.prizePool ?? 2500;
+  useEffect(() => {
+    if (!publicKey?.toBase58()) return;
+    fetchUserHistory(publicKey.toBase58()).then(setUserHistory);
+  }, [publicKey?.toBase58()]);
+
+  useEffect(() => {
+    if (!battleId || !publicKey || !isArenaAddress(battleId)) return;
+    fetchStakeFromChain(connection, new PublicKey(battleId), publicKey)
+      .then(setChainStake)
+      .catch(() => setChainStake(null));
+  }, [battleId, publicKey?.toBase58(), connection]);
+
+  const userStakeForArena = useMemo(() => {
+    if (!battleId || !userHistory) return null;
+    return userHistory.find((h) => h.arenaAddress === battleId) ?? null;
+  }, [battleId, userHistory]);
+
+  const arena = arenaByAddress ?? null;
+  const winnerSide = arena?.winnerSide ?? (battle?.result && battle.agentA
+    ? (battle.result.winnerId === battle.agentA.id ? 0 : 1)
+    : null);
+
+  const stakeFromApi = userStakeForArena;
+  const stakeFromChain = chainStake && chainStake.amount > 0 ? chainStake : null;
+  const effectiveStake = stakeFromApi ?? (stakeFromChain ? {
+    amount: stakeFromChain.amount,
+    side: stakeFromChain.side,
+    claimed: stakeFromChain.claimed,
+    won: winnerSide !== null && stakeFromChain.side === winnerSide,
+  } : null);
+
+  // Chain is source of truth for claimed when available; otherwise fall back to API
+  const alreadyClaimed = stakeFromChain
+    ? stakeFromChain.claimed
+    : (stakeFromApi?.claimed ?? false);
+  const hasStake = effectiveStake != null;
+  const userWon = effectiveStake
+    ? (effectiveStake as { won?: boolean }).won ?? (stakeFromChain && winnerSide !== null ? stakeFromChain.side === winnerSide : false)
+    : (state.userBackedWinner ?? false);
+  const rawAmount = effectiveStake?.amount ?? 0;
+  // API/chain store lamports; heuristic: >=1e6 lamports vs <1000 SOL for display
+  const userStakeLamports =
+    rawAmount >= 1e6 ? rawAmount : (rawAmount > 0 && rawAmount < 1000 ? Math.round(rawAmount * LAMPORTS_PER_SOL) : rawAmount);
+  const canClaim = hasStake && userWon && !alreadyClaimed;
+  const userStake = userStakeLamports / LAMPORTS_PER_SOL;
+  const agentAPool = arena?.agentAPool ?? 0;
+  const agentBPool = arena?.agentBPool ?? 0;
+  const justClaimed = claimStatus === "claimed" && txSignature != null;
+  const effectiveClaimStatus = justClaimed ? "claimed" : alreadyClaimed ? "already_claimed" : claimStatus;
+  const totalPoolLamports = agentAPool + agentBPool;
+  const totalPool = totalPoolLamports / LAMPORTS_PER_SOL;
+  const totalWinnerPoolLamports = winnerSide === 0 ? agentAPool : agentBPool;
+  const totalLoserPoolLamports = winnerSide === 0 ? agentBPool : agentAPool;
+  const payoutLamports = userWon
+    ? computePayoutLamports(userStakeLamports, totalWinnerPoolLamports, totalLoserPoolLamports)
+    : 0;
+  const rewardsAvailable = payoutLamports / LAMPORTS_PER_SOL;
   const platformFeePercent = 2;
-  const platformFee = (totalPool * platformFeePercent) / 100;
-  const losersPool = totalPool * 0.45;
-  const winnerShare = totalPool - platformFee;
-  const multiplier = 1.8;
-  const userShareOfPool = userWon ? (userStake / (totalPool * 0.55)) * winnerShare : 0;
-  const payout = userWon ? userStake * multiplier : 0;
-  const rewardsAvailable = userWon ? payout : 0;
+  const platformFee = totalPool * (platformFeePercent / 100);
+  const rewardFromPool = userWon ? rewardsAvailable - userStake : 0;
+  const payout = rewardsAvailable;
 
   const winner: Agent | null = useMemo(() => {
     if (!battle?.result) return battle?.agentB ?? null;
@@ -96,16 +195,63 @@ export default function VictoryHall() {
   const victoryMetric = battle?.result?.victoryMetric ?? "Final score: 62 – 38";
 
   useEffect(() => {
+    if (needsArenaFetch && arenaByAddress === undefined) return;
     if (!battle) navigate("/arena", { replace: true });
-  }, [battle, navigate]);
+  }, [battle, navigate, needsArenaFetch, arenaByAddress]);
 
-  const handleClaim = async () => {
+  const handleClaim = useCallback(async () => {
+    if (!canClaim) return;
+    if (!connected || !publicKey) {
+      setWalletModalVisible(true);
+      return;
+    }
+    if (!battleId || !isArenaAddress(battleId)) {
+      toast.info("Claim is only available for settled arena battles on-chain");
+      return;
+    }
     setClaimStatus("pending");
-    await new Promise((r) => setTimeout(r, 2200));
-    const sig = "5K7mN9pQ2xR8vL3wE6jH4tY1uB0cF7dA9sG2mockSignature";
-    setTxSignature(sig);
-    setClaimStatus("claimed");
-  };
+    const toastId = toast.loading("Confirm claim in your wallet...");
+    try {
+      const ix = await buildClaimRewardInstruction(
+        connection,
+        new PublicKey(battleId),
+        publicKey
+      );
+      const { Transaction } = await import("@solana/web3.js");
+      const tx = new Transaction().add(ix);
+      const sig = await sendTransaction(tx, connection);
+      setTxSignature(sig);
+      setClaimStatus("claimed");
+      // Refetch chain stake so claimed=true is reflected
+      if (battleId && publicKey) {
+        fetchStakeFromChain(connection, new PublicKey(battleId), publicKey)
+          .then(setChainStake)
+          .catch(() => {});
+      }
+      toast.success("Rewards claimed!", {
+        id: toastId,
+        description: "View on Solscan",
+        action: {
+          label: "View",
+          onClick: () => window.open(`https://solscan.io/tx/${sig}`, "_blank"),
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg.includes("User rejected") ? "Transaction cancelled" : msg, {
+        id: toastId,
+      });
+      setClaimStatus("idle");
+    }
+  }, [
+    canClaim,
+    connected,
+    publicKey,
+    battleId,
+    connection,
+    sendTransaction,
+    setWalletModalVisible,
+  ]);
 
   const solscanUrl = txSignature
     ? `https://solscan.io/tx/${txSignature}`
@@ -126,6 +272,17 @@ export default function VictoryHall() {
     }
   }, [userWon]);
 
+  const isLoading = needsArenaFetch && arenaByAddress === undefined;
+  if (isLoading) {
+    return (
+      <div className="relative min-h-screen grid-bg overflow-hidden flex items-center justify-center">
+        <div className="glass rounded-2xl p-8 border border-border text-center">
+          <div className="animate-spin w-10 h-10 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="font-display text-sm text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
   if (!battle || !winner) return null;
 
   const isWinTheme = userWon;
@@ -251,18 +408,18 @@ export default function VictoryHall() {
                 <span className="font-mono font-bold">{userStake} SOL</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Multiplier</span>
-                <span className="font-mono font-bold">{multiplier}x</span>
+                <span className="text-muted-foreground">Your stake</span>
+                <span className="font-mono font-bold">{userStake.toFixed(4)} SOL</span>
               </div>
             </div>
             <div className="rounded-lg bg-muted/50 p-3 font-mono text-xs space-y-1 border border-border">
-              <p className="text-muted-foreground">Earnings formula</p>
+              <p className="text-muted-foreground">Payout formula</p>
               <p className="text-foreground">
-                Staked amount + share of losers&apos; pool − platform fee ({platformFeePercent}%) = your payout
+                Stake + share of losers&apos; pool (after {platformFeePercent}% fee) = your payout
               </p>
               <p className="pt-2 text-foreground">
-                {userStake} + {(userShareOfPool - userStake).toFixed(2)} − {platformFee.toFixed(2)} ={" "}
-                <span style={isWinTheme ? { color: SOLANA_GREEN } : {}}>{payout.toFixed(2)} SOL</span>
+                {userStake.toFixed(4)} + {rewardFromPool.toFixed(4)} ={" "}
+                <span style={isWinTheme ? { color: SOLANA_GREEN } : {}}>{payout.toFixed(4)} SOL</span>
               </p>
             </div>
           </section>
@@ -273,7 +430,7 @@ export default function VictoryHall() {
               Your rewards
             </h2>
             <AnimatePresence mode="wait">
-              {claimStatus === "idle" && (
+              {effectiveClaimStatus === "idle" && (
                 <motion.div
                   key="idle"
                   initial={{ opacity: 0 }}
@@ -296,7 +453,7 @@ export default function VictoryHall() {
                     <p className="text-xs text-muted-foreground mb-1">Rewards available</p>
                     <p
                       className="font-display text-2xl font-bold tabular-nums"
-                      style={userWon ? { color: SOLANA_GREEN } : {}}
+                      style={canClaim || userWon ? { color: SOLANA_GREEN } : {}}
                     >
                       {rewardsAvailable.toFixed(2)} SOL
                     </p>
@@ -304,7 +461,7 @@ export default function VictoryHall() {
                   <Button
                     className="w-full font-display text-sm h-12"
                     style={
-                      userWon
+                      canClaim
                         ? {
                             background: SOLANA_GREEN,
                             color: "#050505",
@@ -313,13 +470,13 @@ export default function VictoryHall() {
                         : {}
                     }
                     onClick={handleClaim}
-                    disabled={!userWon}
+                    disabled={!canClaim}
                   >
-                    {userWon ? "Claim rewards" : "No rewards to claim"}
+                    {alreadyClaimed ? "Already claimed" : !connected ? "Connect wallet" : !hasStake && userHistory ? "You didn't stake in this battle" : !userWon ? "No rewards (you backed the loser)" : "Claim rewards"}
                   </Button>
                 </motion.div>
               )}
-              {claimStatus === "pending" && (
+              {effectiveClaimStatus === "pending" && (
                 <motion.div
                   key="pending"
                   initial={{ opacity: 0 }}
@@ -337,7 +494,23 @@ export default function VictoryHall() {
                   <p className="text-xs text-muted-foreground">Confirm in your wallet</p>
                 </motion.div>
               )}
-              {claimStatus === "claimed" && (
+              {effectiveClaimStatus === "already_claimed" && (
+                <motion.div
+                  key="already_claimed"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="space-y-4"
+                >
+                  <div className="rounded-lg border-2 py-4 px-4 text-center border-border bg-muted/30">
+                    <p className="font-display text-sm font-bold text-muted-foreground">
+                      Already claimed
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">You claimed rewards in a previous session</p>
+                  </div>
+                </motion.div>
+              )}
+              {effectiveClaimStatus === "claimed" && (
                 <motion.div
                   key="claimed"
                   initial={{ opacity: 0 }}

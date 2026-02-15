@@ -15,7 +15,10 @@
     "setup:oracle": "ts-node scripts/setup-oracle.ts",
     "fund:oracle": "ts-node scripts/fund-oracle.ts",
     "setup:webhook": "ts-node scripts/setup-webhook.ts",
-    "db:migrate:run": "ts-node scripts/run-migration.ts"
+    "db:migrate:run": "ts-node scripts/run-migration.ts",
+    "create:arena": "ts-node scripts/create-arena.ts",
+    "delete:live-arenas": "ts-node scripts/delete-live-arenas.ts",
+    "delete:settled-arenas": "ts-node scripts/delete-settled-arenas.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",

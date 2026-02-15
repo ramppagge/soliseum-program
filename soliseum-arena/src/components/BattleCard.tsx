@@ -87,8 +87,8 @@ export function BattleCard({ battle, onClick }: { battle: Battle; onClick?: () =
           : "border border-border opacity-70 hover:opacity-90 hover:border-primary/30"
       }`}
     >
-      {/* Gradient overlay on hover */}
-      <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 ${
+      {/* Gradient overlay on hover - pointer-events-none so it doesn't block clicks */}
+      <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none ${
         isLive ? "bg-gradient-to-br from-secondary/5 to-transparent" : 
         isPending ? "bg-gradient-to-br from-primary/5 to-transparent" : 
         "bg-gradient-to-br from-primary/5 to-transparent"

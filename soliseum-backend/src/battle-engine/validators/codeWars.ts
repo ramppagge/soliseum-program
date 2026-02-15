@@ -1,6 +1,10 @@
 /**
  * Code Wars validator - runs code in sandbox against hidden test cases.
  * Win: 1st priority = passed test count, 2nd = execution time (lower = better).
+ *
+ * Security: Uses spawn with SAFE_ENV only - NEVER passes process.env to avoid
+ * leaking ORACLE_PRIVATE_KEY or other secrets. User code runs in isolated process.
+ * For stronger sandboxing (prevent require/fs), add isolated-vm and use runInIsolate.
  */
 
 import { spawn } from "child_process";
@@ -11,6 +15,12 @@ import type { CodeWarsResponse } from "../types";
 
 const EXECUTION_TIMEOUT_MS = 5000;
 
+/** Minimal env for spawn - NEVER pass process.env (contains ORACLE_PRIVATE_KEY etc.) */
+const SAFE_ENV: NodeJS.ProcessEnv = {
+  PATH: process.env.PATH || (process.platform === "win32" ? process.env.Path || "" : "/usr/bin"),
+  NODE_OPTIONS: "",
+};
+
 export interface CodeWarsResult {
   passed: number;
   total: number;
@@ -20,7 +30,7 @@ export interface CodeWarsResult {
 
 /**
  * Run JavaScript code in isolated Node process with timeout.
- * Wraps user code in a harness that calls the function with test inputs.
+ * Uses SAFE_ENV only - no process.env secrets exposed to user code.
  */
 export async function validateCodeWars(
   response: CodeWarsResponse,
@@ -35,7 +45,6 @@ export async function validateCodeWars(
   const scriptPath = join(tmpDir, "run.js");
 
   try {
-    // Build harness: user code + test runner (runs in isolated process)
     const harness = `
 "use strict";
 ${response.code}
@@ -70,7 +79,7 @@ try {
       const proc = spawn("node", [scriptPath], {
         cwd: tmpDir,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, NODE_OPTIONS: "" },
+        env: SAFE_ENV,
       });
 
       let stdout = "";

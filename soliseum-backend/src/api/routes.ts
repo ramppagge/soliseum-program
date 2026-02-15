@@ -4,7 +4,7 @@
  */
 
 import { Request, Response } from "express";
-import { eq, desc, sql, and } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   agents,
@@ -28,6 +28,11 @@ function setCache(key: string, data: unknown, ttlMs = CACHE_TTL_MS): void {
   cache.set(key, { data, expires: Date.now() + ttlMs });
 }
 
+export function invalidateArenaCaches(): void {
+  cache.delete("arena:active");
+  cache.delete("arena:settled");
+}
+
 function handleDbError(err: unknown, res: Response, context: string): void {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`[API] ${context}:`, message);
@@ -36,6 +41,52 @@ function handleDbError(err: unknown, res: Response, context: string): void {
       error: "Database unavailable",
       details: process.env.NODE_ENV === "development" ? message : undefined,
     });
+  }
+}
+
+/** GET /api/stats/global - Global platform stats for social proof */
+export async function getGlobalStats(_req: Request, res: Response): Promise<void> {
+  const cacheKey = "stats:global";
+  const cached = getCached<object>(cacheKey);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
+
+  try {
+    const [settledCount] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(arenas)
+      .where(eq(arenas.status, "Settled"));
+
+    const [stakersCount] = await db
+      .select({ count: sql<number>`count(distinct ${stakes.userAddress})::int` })
+      .from(stakes);
+
+    const wonStakes = await db
+      .select({
+        amount: stakes.amount,
+        side: stakes.side,
+        winnerSide: arenas.winnerSide,
+      })
+      .from(stakes)
+      .innerJoin(arenas, eq(stakes.arenaId, arenas.id))
+      .where(eq(stakes.claimed, true));
+
+    const totalSolWon = wonStakes
+      .filter((s) => s.winnerSide !== null && s.side === s.winnerSide)
+      .reduce((sum, s) => sum + Number(s.amount), 0);
+
+    const data = {
+      totalSolWon: totalSolWon / 1e9, // lamports to SOL (approximate - amounts in DB may be lamports or SOL)
+      battlesSettled: settledCount?.count ?? 0,
+      totalStakers: stakersCount?.count ?? 0,
+    };
+
+    setCache(cacheKey, data, 30_000);
+    res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getGlobalStats");
   }
 }
 
@@ -76,6 +127,90 @@ export async function getActiveArenas(_req: Request, res: Response): Promise<voi
   res.json(data);
   } catch (err) {
     handleDbError(err, res, "getActiveArenas");
+  }
+}
+
+/** GET /api/arena/settled - Settled arenas for concluded battles section */
+export async function getSettledArenas(_req: Request, res: Response): Promise<void> {
+  const cacheKey = "arena:settled";
+  const cached = getCached<object[]>(cacheKey);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
+
+  try {
+    const rows = await db
+      .select({
+        id: arenas.id,
+        arenaAddress: arenas.arenaAddress,
+        status: arenas.status,
+        totalPool: arenas.totalPool,
+        agentAPool: arenas.agentAPool,
+        agentBPool: arenas.agentBPool,
+        agentAPubkey: arenas.agentAPubkey,
+        agentBPubkey: arenas.agentBPubkey,
+        startTime: arenas.startTime,
+        winnerSide: arenas.winnerSide,
+        updatedAt: arenas.updatedAt,
+      })
+      .from(arenas)
+      .where(eq(arenas.status, "Settled"))
+      .orderBy(desc(arenas.updatedAt));
+
+    const data = rows.map((r) => ({
+      ...r,
+      totalPool: Number(r.totalPool),
+      agentAPool: Number(r.agentAPool),
+      agentBPool: Number(r.agentBPool),
+    }));
+
+    setCache(cacheKey, data, 10_000);
+    res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getSettledArenas");
+  }
+}
+
+/** GET /api/arena/:address - Single arena by address (Live or Settled) */
+export async function getArenaByAddress(req: Request, res: Response): Promise<void> {
+  const address = req.params?.address as string;
+  if (!address || address.length < 32) {
+    res.status(400).json({ error: "Invalid arena address" });
+    return;
+  }
+
+  try {
+    const [row] = await db
+      .select({
+        id: arenas.id,
+        arenaAddress: arenas.arenaAddress,
+        status: arenas.status,
+        totalPool: arenas.totalPool,
+        agentAPool: arenas.agentAPool,
+        agentBPool: arenas.agentBPool,
+        agentAPubkey: arenas.agentAPubkey,
+        agentBPubkey: arenas.agentBPubkey,
+        startTime: arenas.startTime,
+        winnerSide: arenas.winnerSide,
+      })
+      .from(arenas)
+      .where(eq(arenas.arenaAddress, address))
+      .limit(1);
+
+    if (!row) {
+      res.status(404).json({ error: "Arena not found" });
+      return;
+    }
+
+    res.json({
+      ...row,
+      totalPool: Number(row.totalPool),
+      agentAPool: Number(row.agentAPool),
+      agentBPool: Number(row.agentBPool),
+    });
+  } catch (err) {
+    handleDbError(err, res, "getArenaByAddress");
   }
 }
 

@@ -1,10 +1,13 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Slider } from "@/components/ui/slider";
 import { Zap, TrendingUp, X } from "lucide-react";
+import { toast } from "sonner";
 import type { Battle } from "@/data/mockData";
 
 export function StakingPanel({ battle, onClose }: { battle: Battle; onClose: () => void }) {
+  const navigate = useNavigate();
   const [confidence, setConfidence] = useState([50]);
   const [selectedAgent, setSelectedAgent] = useState<"A" | "B">("A");
 
@@ -102,11 +105,19 @@ export function StakingPanel({ battle, onClose }: { battle: Battle; onClose: () 
           </div>
         </div>
 
-        {/* Place stake button */}
+        {/* Place stake button - navigates to battle page for live staking */}
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           className="w-full py-3 rounded-xl bg-primary font-display text-sm font-bold text-primary-foreground glow-purple glitch-hover transition-all"
+          onClick={() => {
+            onClose();
+            if (battle.status === "live") {
+              navigate(`/arena/battle/${battle.id}`);
+            } else {
+              toast.info("Staking opens when the battle goes live. Check back soon!");
+            }
+          }}
         >
           PLACE STAKE
         </motion.button>

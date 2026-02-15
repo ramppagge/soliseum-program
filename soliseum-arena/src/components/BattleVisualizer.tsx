@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -54,6 +55,8 @@ export interface BattleVisualizerProps {
   impactThreshold?: number;
   /** Called when user clicks "View result & claim" in result overlay */
   onViewResult?: () => void;
+  /** Direct link target for "View result & claim" (more reliable than callback) */
+  resultLink?: { to: string; state?: object };
   /** Called when user clicks "Close" in result overlay */
   onResultClose?: () => void;
   /** Optional: inject logs from WebSocket. Component also accepts logs via prop. */
@@ -212,12 +215,14 @@ function ResultOverlay({
   agentB,
   onClose,
   onViewResult,
+  resultLink,
 }: {
   result: BattleResultBreakdown;
   agentA: AgentVisualizer;
   agentB: AgentVisualizer;
   onClose?: () => void;
   onViewResult?: () => void;
+  resultLink?: { to: string; state?: object };
 }) {
   const winner = result.winner === "A" ? agentA : agentB;
   const unit = (m: ResultMetric) => m.unit ?? "%";
@@ -227,8 +232,10 @@ function ResultOverlay({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-      onClick={onClose}
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
     >
       <motion.div
         initial={{ scale: 0.8, opacity: 0 }}
@@ -291,17 +298,32 @@ function ResultOverlay({
         </div>
 
         <div className="mt-6 flex gap-3">
-          {onViewResult && (
-            <motion.button
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.4 }}
-              onClick={onViewResult}
-              className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground font-display font-bold text-sm hover:bg-secondary/90 transition-colors glow-teal"
-            >
-              View result & claim
-            </motion.button>
-          )}
+          {(onViewResult || resultLink) &&
+            (resultLink ? (
+              <a
+                href={resultLink.to}
+                target="_self"
+                rel="noopener noreferrer"
+                className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground font-display font-bold text-sm hover:bg-secondary/90 transition-colors glow-teal cursor-pointer flex items-center justify-center no-underline"
+              >
+                View result & claim
+              </a>
+            ) : (
+              <motion.button
+                type="button"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.4 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onViewResult?.();
+                }}
+                className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground font-display font-bold text-sm hover:bg-secondary/90 transition-colors glow-teal cursor-pointer"
+              >
+                View result & claim
+              </motion.button>
+            ))}
           {(onClose || onViewResult) && (
             <motion.button
               type="button"
@@ -312,7 +334,7 @@ function ResultOverlay({
                 e.stopPropagation();
                 onClose?.();
               }}
-              className={`relative z-10 py-2 rounded-lg border border-border hover:bg-muted/50 text-sm font-display transition-colors cursor-pointer ${onViewResult ? "flex-1" : "w-full"}`}
+              className={`relative z-10 py-2 rounded-lg border border-border hover:bg-muted/50 text-sm font-display transition-colors cursor-pointer ${(onViewResult || resultLink) ? "flex-1" : "w-full"}`}
             >
               Back to Arena
             </motion.button>
@@ -334,6 +356,7 @@ export function BattleVisualizer({
   result,
   impactThreshold = 15,
   onViewResult,
+  resultLink,
   onResultClose,
   className = "",
 }: BattleVisualizerProps) {
@@ -409,18 +432,21 @@ export function BattleVisualizer({
         </div>
       </motion.div>
 
-      {/* Result Overlay */}
-      <AnimatePresence>
-        {result && (
-          <ResultOverlay
-            result={result}
-            agentA={agentA}
-            agentB={agentB}
-            onClose={onResultClose}
-            onViewResult={onViewResult}
-          />
+      {/* Result Overlay - portaled to body to escape overflow/transform ancestors */}
+      {result &&
+        createPortal(
+          <AnimatePresence>
+            <ResultOverlay
+              result={result}
+              agentA={agentA}
+              agentB={agentB}
+              onClose={onResultClose}
+              onViewResult={onViewResult}
+              resultLink={resultLink}
+            />
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
     </div>
   );
 }

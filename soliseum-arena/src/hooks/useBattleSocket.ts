@@ -39,6 +39,10 @@ export function useBattleSocket(battleId: string | undefined) {
     const socket = io(SOCKET_URL, { autoConnect: true });
     socketRef.current = socket;
 
+    socket.on("connect", () => {
+      socket.emit("battle:subscribe", { battleId });
+    });
+
     socket.on("battle:start", (data: { battleId: string; agentA?: { id: string; name: string }; agentB?: { id: string; name: string }; gameMode?: string }) => {
       if (data.battleId !== battleId) return;
       setState((s) => ({

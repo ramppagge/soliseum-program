@@ -228,6 +228,39 @@ export async function applyInitializeArena(
   }
 }
 
+/** Sync arena status from on-chain to DB. status: 0=Pending, 1=Active, 2=Settled, 3=Cancelled */
+export async function syncArenaFromChain(
+  arenaAddress: string,
+  status: number,
+  winner: number | null
+): Promise<void> {
+  const dbStatus = status === 1 ? "Live" : status === 2 ? "Settled" : status === 3 ? "Cancelled" : "Pending";
+  const now = new Date();
+  await db
+    .update(arenas)
+    .set({
+      status: dbStatus,
+      winnerSide: winner,
+      ...(status === 2 ? { endTime: now } : {}),
+      updatedAt: now,
+    })
+    .where(eq(arenas.arenaAddress, arenaAddress));
+}
+
+export async function applyResetArena(arenaAddress: string): Promise<void> {
+  await db
+    .update(arenas)
+    .set({
+      status: "Live",
+      totalPool: 0,
+      agentAPool: 0,
+      agentBPool: 0,
+      winnerSide: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(arenas.arenaAddress, arenaAddress));
+}
+
 export async function applyClaimReward(
   arenaAddress: string,
   userAddress: string
