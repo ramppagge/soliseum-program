@@ -1,0 +1,424 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 2%;
+    --foreground: 0 0% 98%;
+
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 92%;
+
+    --popover: 0 0% 5%;
+    --popover-foreground: 0 0% 92%;
+
+    --primary: 261 100% 63%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 160 93% 52%;
+    --secondary-foreground: 0 0% 2%;
+
+    --muted: 0 0% 10%;
+    --muted-foreground: 0 0% 55%;
+
+    --accent: 36 100% 50%;
+    --accent-foreground: 0 0% 2%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 261 100% 63%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 3%;
+    --sidebar-foreground: 0 0% 70%;
+    --sidebar-primary: 261 100% 63%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 8%;
+    --sidebar-accent-foreground: 0 0% 92%;
+    --sidebar-border: 0 0% 10%;
+    --sidebar-ring: 261 100% 63%;
+
+    /* Custom tokens */
+    --neon-purple: 261 100% 63%;
+    --neon-teal: 160 93% 52%;
+    --neon-orange: 36 100% 50%;
+    --glass: 0 0% 100% / 0.04;
+    --glass-border: 0 0% 100% / 0.08;
+    --glass-hover: 0 0% 100% / 0.08;
+
+    /* Tier colors */
+    --tier-diamond: 200 100% 70%;
+    --tier-platinum: 220 15% 75%;
+    --tier-gold: 43 100% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Orbitron', sans-serif;
+  }
+}
+
+@layer utilities {
+  /* Glassmorphism */
+  .glass {
+    background: hsla(var(--glass));
+    backdrop-filter: blur(16px);
+    border: 1px solid hsla(var(--glass-border));
+  }
+
+  .glass-hover:hover {
+    background: hsla(var(--glass-hover));
+  }
+
+  /* Neon glows */
+  .glow-purple {
+    box-shadow: 0 0 20px hsla(var(--neon-purple) / 0.3), 0 0 60px hsla(var(--neon-purple) / 0.1);
+  }
+
+  .glow-teal {
+    box-shadow: 0 0 20px hsla(var(--neon-teal) / 0.3), 0 0 60px hsla(var(--neon-teal) / 0.1);
+  }
+
+  .glow-orange {
+    box-shadow: 0 0 20px hsla(var(--neon-orange) / 0.3), 0 0 60px hsla(var(--neon-orange) / 0.1);
+  }
+
+  .neon-border-purple {
+    border: 1px solid hsla(var(--neon-purple) / 0.4);
+    box-shadow: inset 0 0 20px hsla(var(--neon-purple) / 0.05), 0 0 20px hsla(var(--neon-purple) / 0.1);
+  }
+
+  .neon-border-teal {
+    border: 1px solid hsla(var(--neon-teal) / 0.4);
+    box-shadow: inset 0 0 20px hsla(var(--neon-teal) / 0.05), 0 0 20px hsla(var(--neon-teal) / 0.1);
+  }
+
+  /* Grid background */
+  .grid-bg {
+    background-image:
+      linear-gradient(hsla(var(--glass-border)) 1px, transparent 1px),
+      linear-gradient(90deg, hsla(var(--glass-border)) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  /* Pulse animation for live battles */
+  .pulse-live {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% {
+      box-shadow: 0 0 8px hsla(var(--neon-teal) / 0.3);
+    }
+    50% {
+      box-shadow: 0 0 24px hsla(var(--neon-teal) / 0.6), 0 0 48px hsla(var(--neon-teal) / 0.2);
+    }
+  }
+
+  /* Agent Lab: status badges */
+  .status-active {
+    color: hsl(142, 76%, 46%);
+    text-shadow: 0 0 10px hsla(142, 76%, 46%, 0.6);
+    box-shadow: 0 0 12px hsla(142, 76%, 46%, 0.3);
+  }
+
+  .status-in-battle {
+    color: hsl(var(--neon-orange));
+    animation: pulse-warning 1.5s ease-in-out infinite;
+    box-shadow: 0 0 12px hsla(var(--neon-orange) / 0.4);
+  }
+
+  @keyframes pulse-warning {
+    0%, 100% { opacity: 1; box-shadow: 0 0 12px hsla(var(--neon-orange) / 0.4); }
+    50% { opacity: 0.85; box-shadow: 0 0 20px hsla(var(--neon-orange) / 0.6); }
+  }
+
+  .status-idle {
+    color: hsl(var(--muted-foreground));
+    border-color: hsl(var(--border));
+  }
+
+  /* Agent card hover: scale + border glow */
+  .agent-card-hover {
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+
+  .agent-card-hover:hover {
+    transform: scale(1.02);
+    box-shadow: 0 0 28px hsla(var(--neon-purple) / 0.2), 0 0 60px hsla(var(--neon-purple) / 0.08),
+                inset 0 0 20px hsla(var(--neon-purple) / 0.04);
+    border-color: hsla(var(--neon-purple) / 0.6);
+  }
+
+  /* Holographic focus for inputs (Agent Lab modal) */
+  .input-holographic-focus:focus {
+    outline: none;
+    border-color: hsla(var(--neon-purple) / 0.6);
+    box-shadow: 0 0 0 1px hsla(var(--neon-purple) / 0.3),
+                0 0 20px hsla(var(--neon-purple) / 0.15),
+                inset 0 0 20px hsla(var(--neon-purple) / 0.05);
+  }
+
+  /* Glitch hover for buttons */
+  .glitch-hover {
+    position: relative;
+    transition: all 0.15s ease;
+  }
+
+  .glitch-hover:hover {
+    text-shadow: 2px 0 hsl(var(--neon-teal)), -2px 0 hsl(var(--neon-purple));
+    animation: glitch-shift 0.3s ease;
+  }
+
+  @keyframes glitch-shift {
+    0%, 100% { transform: translate(0); }
+    25% { transform: translate(-2px, 1px); }
+    50% { transform: translate(1px, -1px); }
+    75% { transform: translate(-1px, 2px); }
+  }
+
+  /* Text glow */
+  .text-glow-purple {
+    text-shadow: 0 0 10px hsla(var(--neon-purple) / 0.5);
+  }
+
+  .text-glow-teal {
+    text-shadow: 0 0 10px hsla(var(--neon-teal) / 0.5);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted));
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+
+  /* Landing page specific styles */
+  .font-display {
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  /* Enhanced glow effects for landing */
+  .glow-purple-intense {
+    box-shadow: 0 0 30px hsla(var(--neon-purple) / 0.4), 
+                0 0 80px hsla(var(--neon-purple) / 0.2),
+                inset 0 0 30px hsla(var(--neon-purple) / 0.05);
+  }
+
+  .glow-teal-intense {
+    box-shadow: 0 0 30px hsla(var(--neon-teal) / 0.4), 
+                0 0 80px hsla(var(--neon-teal) / 0.2),
+                inset 0 0 30px hsla(var(--neon-teal) / 0.05);
+  }
+
+  /* Smooth hover transitions */
+  .smooth-hover {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* 3D perspective for trophy */
+  .perspective-3d {
+    perspective: 1000px;
+    transform-style: preserve-3d;
+  }
+
+  /* Floating animation */
+  @keyframes float {
+    0%, 100% {
+      transform: translateY(0px);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+
+  .animate-float {
+    animation: float 3s ease-in-out infinite;
+  }
+
+  /* Gradient text */
+  .text-gradient-purple-teal {
+    background: linear-gradient(135deg, hsl(var(--neon-purple)), hsl(var(--neon-teal)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  /* Animated gradient */
+  @keyframes gradient {
+    0% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
+    }
+  }
+
+  .animate-gradient {
+    animation: gradient 3s ease infinite;
+  }
+
+  /* Glitch effect */
+  @keyframes glitch {
+    0% {
+      transform: translate(0);
+    }
+    20% {
+      transform: translate(-2px, 2px);
+    }
+    40% {
+      transform: translate(-2px, -2px);
+    }
+    60% {
+      transform: translate(2px, 2px);
+    }
+    80% {
+      transform: translate(2px, -2px);
+    }
+    100% {
+      transform: translate(0);
+    }
+  }
+
+  .glitch-animate {
+    animation: glitch 0.3s ease;
+  }
+
+  /* Holographic effect */
+  .holographic {
+    position: relative;
+    background: linear-gradient(135deg, 
+      rgba(153, 69, 255, 0.1) 0%, 
+      rgba(16, 237, 133, 0.1) 100%);
+    backdrop-filter: blur(20px);
+  }
+
+  .holographic::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(45deg, 
+      transparent 30%, 
+      rgba(255, 255, 255, 0.05) 50%, 
+      transparent 70%);
+    background-size: 200% 200%;
+    animation: shimmer 3s ease-in-out infinite;
+  }
+
+  @keyframes shimmer {
+    0%, 100% {
+      background-position: 0% 0%;
+    }
+    50% {
+      background-position: 100% 100%;
+    }
+  }
+
+  /* 3D transform perspective */
+  .transform-3d {
+    transform-style: preserve-3d;
+    perspective: 1000px;
+  }
+
+  /* Deeper black background */
+  body {
+    background-color: #050505;
+  }
+
+  /* Battle Station: LIVE badge (red pulse) */
+  .live-badge {
+    background: hsl(0, 84%, 50%);
+    color: white;
+    box-shadow: 0 0 12px hsla(0, 84%, 50%, 0.6);
+    animation: live-pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% {
+      box-shadow: 0 0 12px hsla(0, 84%, 50%, 0.6);
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 24px hsla(0, 84%, 50%, 0.9), 0 0 40px hsla(0, 84%, 50%, 0.4);
+      opacity: 0.95;
+    }
+  }
+
+  /* Battle Station: impact screen shake */
+  .screen-shake {
+    animation: shake-left 0.35s ease-out;
+  }
+
+  .screen-shake-right {
+    animation: shake-right 0.35s ease-out;
+  }
+
+  @keyframes shake-left {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(2px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(1px); }
+  }
+
+  @keyframes shake-right {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(4px); }
+    40% { transform: translateX(-2px); }
+    60% { transform: translateX(2px); }
+    80% { transform: translateX(-1px); }
+  }
+
+  /* Network Guardian: vibrating alert */
+  @keyframes vibrate {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-2px); }
+    40% { transform: translateX(2px); }
+    60% { transform: translateX(-1px); }
+    80% { transform: translateX(1px); }
+  }
+
+  /* Warning shimmer */
+  @keyframes shimmer-warning {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  /* Battle Station: winner reveal */
+  .winner-glow {
+    text-shadow: 0 0 20px hsla(var(--neon-teal) / 0.8), 0 0 40px hsla(var(--neon-teal) / 0.4);
+  }
+
+  .winner-burst {
+    box-shadow: 0 0 30px hsla(var(--neon-teal) / 0.5), 0 0 60px hsla(var(--neon-teal) / 0.2);
+  }
+}
