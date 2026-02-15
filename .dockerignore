@@ -1,0 +1,8 @@
+# Exclude heavy/unnecessary files from build context
+soliseum-arena
+programs
+target
+.anchor
+.git
+.gitignore
+*.md
