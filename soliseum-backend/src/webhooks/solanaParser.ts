@@ -3,14 +3,9 @@
  * Extracts place_stake, settle_game, initialize_arena, claim_reward from Helius/Shyft webhooks.
  */
 
-import * as crypto from "crypto";
+import { getInstructionDiscriminator } from "../utils/anchor";
 
 const PROGRAM_ID = "DSabgEbjSc4ZYGL8ZkCoFiE9NFZgF1vGRmrsFFkBZiXz";
-
-function getInstructionDiscriminator(ixName: string): Buffer {
-  const preimage = `global:${ixName}`;
-  return crypto.createHash("sha256").update(preimage).digest().subarray(0, 8);
-}
 
 const DISCRIMINATORS = {
   place_stake: getInstructionDiscriminator("place_stake"),

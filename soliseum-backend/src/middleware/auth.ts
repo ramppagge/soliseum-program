@@ -140,19 +140,15 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 /**
- * Optional auth: if a token is present, validate it and attach walletAddress.
- * Does NOT reject if no token is provided.
+ * Validate a session token (used by SocketManager for WebSocket auth).
+ * Returns true if the token maps to a valid, non-expired session.
  */
-export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
-  const header = req.headers.authorization;
-  if (!header) return next();
-
-  const token = header.replace(/^Bearer\s+/i, "");
+export function validateSession(token: string): boolean {
   const session = sessionStore.get(token);
-
-  if (session && Date.now() - session.createdAt <= SESSION_TTL_MS) {
-    (req as any).walletAddress = session.walletAddress;
+  if (!session) return false;
+  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+    sessionStore.delete(token);
+    return false;
   }
-
-  next();
+  return true;
 }

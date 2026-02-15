@@ -96,11 +96,11 @@ export default function BattleStation() {
       .then((a) => setArenaByAddress(a ?? null));
   }, [battleId, needsArenaFetch]);
 
-  const socketState = useBattleSocket(battleId ?? undefined);
   const queryClient = useQueryClient();
   const { token, login, isLoading: authLoading } = useAuth();
   const { connected, publicKey, sendTransaction } = useWallet();
   const { setVisible: setWalletModalVisible } = useWalletModal();
+  const socketState = useBattleSocket(battleId ?? undefined, token);
 
   const [mockLogs, setMockLogs] = useState<LogEntry[]>([]);
   const [scoreA, setScoreA] = useState(50);
@@ -244,13 +244,19 @@ export default function BattleStation() {
       );
       if (!res.ok) {
         setStartBattleError(res.error ?? "Failed to start battle");
+      } else {
+        // Battle completed — refresh arena data so UI reflects Settled status
+        queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
+        queryClient.invalidateQueries({ queryKey: ["arena", "settled"] });
+        const updated = await fetchArenaByAddress(battleId);
+        setArenaByAddress(updated ?? null);
       }
     } catch (e) {
       setStartBattleError(e instanceof Error ? e.message : String(e));
     } finally {
       setStartBattleLoading(false);
     }
-  }, [battle, battleId, token]);
+  }, [battle, battleId, token, queryClient]);
 
   const handleResetArena = useCallback(async () => {
     if (!battleId || !isArenaAddress(battleId) || !token) return;
@@ -369,6 +375,12 @@ export default function BattleStation() {
         },
       });
       setSolAmount("");
+
+      // Refresh arena data so pool amounts update in the UI
+      queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
+      fetchArenaByAddress(battleId).then((updated) => {
+        if (updated) setArenaByAddress(updated);
+      });
     } catch (e) {
       const err = e as Error & { transactionMessage?: string; logs?: string[] };
       const msg =
@@ -461,15 +473,15 @@ export default function BattleStation() {
                     <TooltipTrigger asChild>
                       <Button
                         size="sm"
-                        onClick={token ? handleStartBattle : connected ? login : () => setWalletModalVisible(true)}
+                        onClick={token ? handleStartBattle : () => setWalletModalVisible(true)}
                         disabled={authLoading || startBattleLoading}
                         className="font-display"
                       >
                         <Swords className="w-4 h-4 mr-2" />
                         {token
                           ? (startBattleLoading ? "Starting..." : "Start Battle")
-                          : connected
-                          ? (authLoading ? "Signing..." : "Sign in to Start")
+                          : authLoading
+                          ? "Signing in..."
                           : "Connect wallet to Start"}
                       </Button>
                     </TooltipTrigger>
@@ -505,15 +517,15 @@ export default function BattleStation() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={token ? handleResetArena : connected ? login : () => setWalletModalVisible(true)}
+                    onClick={token ? handleResetArena : () => setWalletModalVisible(true)}
                     disabled={authLoading || resetLoading}
                     className="font-display"
                   >
                     <RotateCcw className="w-4 h-4 mr-2" />
                     {token
                       ? (resetLoading ? "Resetting..." : "Reset Arena")
-                      : connected
-                      ? (authLoading ? "Signing..." : "Sign in to Reset")
+                      : authLoading
+                      ? "Signing in..."
                       : "Connect wallet to Reset"}
                   </Button>
                 </div>

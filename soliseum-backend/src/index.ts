@@ -10,8 +10,9 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 import { createServer } from "http";
-import { SimulationEngine } from "./SimulationEngine";
+import { runSimulationWithDefaults } from "./SimulationEngine";
 import { SocketManager } from "./SocketManager";
 import { SolanaService } from "./SolanaService";
 import type { StartBattlePayload } from "./types";
@@ -25,6 +26,9 @@ import {
   getUserHistory,
   getAgentByPubkey,
   getGlobalStats,
+  registerAgent,
+  updateAgent,
+  listAgents,
 } from "./api/routes";
 import {
   validate,
@@ -38,6 +42,9 @@ import {
   agentPubkeyParams,
   authNonceBody,
   authVerifyBody,
+  registerAgentBody,
+  updateAgentBody,
+  listAgentsQuery,
   apiLimiter,
   battleLimiter,
   authLimiter,
@@ -45,6 +52,7 @@ import {
   issueNonce,
   verifySignature,
   requireAuth,
+  validateSession,
 } from "./middleware";
 import { BattleEngine, HttpAgentClient, MockAgent } from "./battle-engine";
 import type { AgentConfig } from "./battle-engine";
@@ -60,11 +68,28 @@ const httpServer = createServer(app);
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.use(express.json({ limit: "1mb" }));
 
-// Log every request (helps debug)
+// Request ID middleware — attach unique ID for tracing across logs
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+  (req as any).requestId = requestId;
+  res.setHeader("x-request-id", requestId);
+  next();
+});
+
+// Structured request logging
 app.use((req, _res, next) => {
   const u = req.url ?? req.path ?? "";
   const path = u.split("?")[0];
-  console.log("[API]", req.method, path || "(empty)", "→ url:", JSON.stringify(u));
+  const requestId = (req as any).requestId ?? "-";
+  console.log(JSON.stringify({
+    level: "info",
+    msg: "request",
+    method: req.method,
+    path: path || "/",
+    requestId,
+    ip: req.ip,
+    ts: new Date().toISOString(),
+  }));
   next();
 });
 
@@ -79,16 +104,52 @@ app.use((req, _res, next) => {
   next();
 });
 
-const simulationEngine = new SimulationEngine();
 const socketManager = new SocketManager();
 const solanaService = new SolanaService();
+
+// Wire session validation into SocketManager for WebSocket auth
+socketManager.setSessionValidator(validateSession);
 
 // Socket.io: same server as Express when SOCKET_PORT === PORT (deployment); else separate server (local dev)
 const socketHttpServer = SOCKET_PORT === PORT ? httpServer : createServer();
 socketManager.attach(socketHttpServer);
 
-/** Run one full battle: simulate, stream logs, settle on-chain. */
+// ─── Concurrency limiter for on-chain settlements ────────────────────────────
+const MAX_CONCURRENT_BATTLES = parseInt(process.env.MAX_CONCURRENT_BATTLES ?? "3", 10);
+let activeBattles = 0;
+const battleQueue: Array<{ resolve: () => void }> = [];
+
+async function acquireBattleSlot(): Promise<void> {
+  if (activeBattles < MAX_CONCURRENT_BATTLES) {
+    activeBattles++;
+    return;
+  }
+  // Wait for a slot to free up
+  await new Promise<void>((resolve) => {
+    battleQueue.push({ resolve });
+  });
+}
+
+function releaseBattleSlot(): void {
+  const next = battleQueue.shift();
+  if (next) {
+    next.resolve(); // Hand the slot to the next waiter
+  } else {
+    activeBattles--;
+  }
+}
+
+/** Run one full battle: simulate, stream logs, settle on-chain. Rate-limited to MAX_CONCURRENT_BATTLES. */
 async function runBattle(payload: StartBattlePayload): Promise<{ winner: number; txSignature?: string }> {
+  await acquireBattleSlot();
+  try {
+    return await runBattleInner(payload);
+  } finally {
+    releaseBattleSlot();
+  }
+}
+
+async function runBattleInner(payload: StartBattlePayload): Promise<{ winner: number; txSignature?: string }> {
   const { battleId, arenaAddress, agentA, agentB, gameMode, winProbabilityA } = payload;
 
   const { enrichArenaFromBattle } = await import("./webhooks/indexerService");
@@ -100,7 +161,7 @@ async function runBattle(payload: StartBattlePayload): Promise<{ winner: number;
     agentB.name
   ).catch((e) => console.warn("[runBattle] enrichArenaFromBattle:", (e as Error).message));
 
-  const result = simulationEngine.run(agentA, agentB, gameMode, winProbabilityA);
+  const result = runSimulationWithDefaults(agentA, agentB, gameMode, winProbabilityA);
 
   const ctx = {
     battleId,
@@ -268,6 +329,30 @@ app.get(
   (req, res) => getUserHistory(req, res)
 );
 
+// ─── Agent Registration (authenticated) ──────────────────────────────────────
+app.post(
+  "/api/agents/register",
+  apiLimiter,
+  requireAuth,
+  validate({ body: registerAgentBody }),
+  (req, res) => registerAgent(req, res)
+);
+
+app.put(
+  "/api/agents/:pubkey",
+  apiLimiter,
+  requireAuth,
+  validate({ params: agentPubkeyParams, body: updateAgentBody }),
+  (req, res) => updateAgent(req, res)
+);
+
+app.get(
+  "/api/agents",
+  apiLimiter,
+  validate({ query: listAgentsQuery }),
+  (req, res) => listAgents(req, res)
+);
+
 app.get(
   "/api/agents/:pubkey",
   apiLimiter,
@@ -275,7 +360,7 @@ app.get(
   (req, res) => getAgentByPubkey(req, res)
 );
 
-// ─── Test Battle (Battle Engine - MockAgent or external APIs) ─────────────────
+// ─── Test Battle (Battle Engine - registered agents or MockAgent fallback) ────
 app.post(
   "/api/test-battle",
   apiLimiter,
@@ -289,8 +374,27 @@ app.post(
         gameMode?: "TRADING_BLITZ" | "QUICK_CHESS" | "CODE_WARS";
       };
 
-      const configA: AgentConfig = { id: a.id, name: a.name, apiUrl: a.apiUrl ?? null };
-      const configB: AgentConfig = { id: b.id, name: b.name, apiUrl: b.apiUrl ?? null };
+      // Resolve agents: if apiUrl not provided inline, look up from DB by pubkey
+      const { db: appDb } = await import("./db");
+      const { agents: agentsTable } = await import("./db/schema");
+      const { eq: eqOp } = await import("drizzle-orm");
+
+      async function resolveApiUrl(id: string, inlineUrl?: string | null): Promise<string | null> {
+        if (inlineUrl) return inlineUrl;
+        const [row] = await appDb
+          .select({ apiUrl: agentsTable.apiUrl, agentStatus: agentsTable.agentStatus })
+          .from(agentsTable)
+          .where(eqOp(agentsTable.pubkey, id))
+          .limit(1);
+        if (row?.apiUrl && row.agentStatus === "active") return row.apiUrl;
+        return null;
+      }
+
+      const resolvedUrlA = await resolveApiUrl(a.id, a.apiUrl);
+      const resolvedUrlB = await resolveApiUrl(b.id, b.apiUrl);
+
+      const configA: AgentConfig = { id: a.id, name: a.name, apiUrl: resolvedUrlA };
+      const configB: AgentConfig = { id: b.id, name: b.name, apiUrl: resolvedUrlB };
 
       const agentAClient = configA.apiUrl ? new HttpAgentClient(configA) : new MockAgent(configA, 0);
       const agentBClient = configB.apiUrl ? new HttpAgentClient(configB) : new MockAgent(configB, 1);
@@ -397,6 +501,9 @@ app.get(["/", ""], (_req, res) => {
       "GET /api/arena/active": "live battles with pool sizes",
       "GET /api/leaderboard": "top agents by credibility",
       "GET /api/user/:address/history": "user stakes and winnings",
+      "POST /api/agents/register": "register new AI agent [auth required] (body: pubkey, name, category, apiUrl?, description?)",
+      "PUT /api/agents/:pubkey": "update agent [auth required, owner only] (body: name?, apiUrl?, agentStatus?)",
+      "GET /api/agents": "list registered agents (query: category?, status?, limit?)",
       "GET /api/agents/:pubkey": "agent profile + battle sparkline",
       "POST /api/test-battle": "Battle Engine test (agentA, agentB, gameMode) - streams via Socket.io",
     },
@@ -406,8 +513,51 @@ app.get(["/", ""], (_req, res) => {
   });
 });
 
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok", service: "soliseum-oracle", uptime: process.uptime() });
+app.get("/health", async (_req, res) => {
+  const checks: Record<string, "ok" | "degraded" | "down"> = {
+    service: "ok",
+    database: "down",
+    solanaRpc: "down",
+  };
+
+  // Check database connectivity
+  try {
+    const { db } = await import("./db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`SELECT 1`);
+    checks.database = "ok";
+  } catch {
+    checks.database = "down";
+  }
+
+  // Check Solana RPC connectivity
+  try {
+    const { Connection } = await import("@solana/web3.js");
+    const rpcUrl = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
+    const conn = new Connection(rpcUrl);
+    await conn.getLatestBlockhash({ commitment: "confirmed" });
+    checks.solanaRpc = "ok";
+  } catch {
+    checks.solanaRpc = "down";
+  }
+
+  const overallStatus =
+    checks.database === "ok" && checks.solanaRpc === "ok"
+      ? "ok"
+      : checks.database === "ok" || checks.solanaRpc === "ok"
+        ? "degraded"
+        : "down";
+
+  const httpStatus = overallStatus === "ok" ? 200 : overallStatus === "degraded" ? 200 : 503;
+
+  res.status(httpStatus).json({
+    status: overallStatus,
+    service: "soliseum-oracle",
+    uptime: process.uptime(),
+    checks,
+    activeBattles,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.get("/favicon.ico", (_req, res) => {

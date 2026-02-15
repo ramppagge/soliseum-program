@@ -3,6 +3,7 @@
  */
 
 import type { CodeWarsChallenge } from "../types";
+import { seededRandom } from "../../utils/seededRandom";
 
 const CHALLENGES: Array<{
   problem: string;
@@ -43,11 +44,6 @@ const CHALLENGES: Array<{
     ],
   },
 ];
-
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9999) * 10000;
-  return x - Math.floor(x);
-}
 
 export function generateCodeWarsChallenge(seed?: number): {
   challenge: CodeWarsChallenge;

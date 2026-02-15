@@ -1,26 +1,50 @@
 /**
  * Soliseum Phase 3 - Helius/Shyft Webhook Handler
  * POST /api/webhooks/solana
- * Validates secret header and processes Soliseum program transactions.
+ * Validates secret header (timing-safe) and processes Soliseum program transactions.
  */
 
 import { Request, Response } from "express";
+import crypto from "crypto";
 import { parseWebhookPayload } from "./solanaParser";
 import { processParsedInstructions } from "./indexerService";
 
 const WEBHOOK_SECRET_HEADER = "x-helius-webhook-secret"; // or x-shyft-webhook-secret
 const EXPECTED_SECRET = process.env.WEBHOOK_SECRET ?? "";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
+/**
+ * Timing-safe webhook secret validation.
+ * Uses crypto.timingSafeEqual to prevent timing-attack side-channel leaks.
+ * Rejects ALL requests when WEBHOOK_SECRET is unset in production.
+ */
 export function validateWebhookSecret(req: Request): boolean {
   if (!EXPECTED_SECRET) {
-    console.warn("[Webhook] WEBHOOK_SECRET not set - accepting all requests");
+    if (IS_PRODUCTION) {
+      console.error("[Webhook] WEBHOOK_SECRET not set - rejecting all requests in production");
+      return false;
+    }
+    console.warn("[Webhook] WEBHOOK_SECRET not set - accepting requests in development only");
     return true;
   }
+
   const provided =
     req.headers[WEBHOOK_SECRET_HEADER] ??
     req.headers["x-shyft-webhook-secret"] ??
     req.headers["authorization"]?.replace(/^Bearer\s+/i, "");
-  return typeof provided === "string" && provided === EXPECTED_SECRET;
+
+  if (typeof provided !== "string" || provided.length === 0) {
+    return false;
+  }
+
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(EXPECTED_SECRET, "utf8");
+
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(a, b);
 }
 
 export async function handleSolanaWebhook(req: Request, res: Response): Promise<void> {

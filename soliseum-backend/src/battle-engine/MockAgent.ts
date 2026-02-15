@@ -6,11 +6,7 @@
 import { Chess } from "chess.js";
 import type { AgentClient } from "./AgentClient";
 import type { BattleChallenge, BattleResponse, AgentConfig } from "./types";
-
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9999) * 10000;
-  return x - Math.floor(x);
-}
+import { seededRandom } from "../utils/seededRandom";
 
 export class MockAgent implements AgentClient {
   constructor(

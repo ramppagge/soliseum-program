@@ -3,11 +3,7 @@
  */
 
 import type { TradingBlitzChallenge } from "../types";
-
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9999) * 10000;
-  return x - Math.floor(x);
-}
+import { seededRandom } from "../../utils/seededRandom";
 
 /** Generate 50 OHLCV data points + ground truth (price 5 min later). */
 export function generateTradingBlitzChallenge(seed?: number): {

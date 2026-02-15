@@ -1,6 +1,7 @@
 /**
  * Socket.io hook for real-time battle logs.
  * Listens for battle:start, battle:log, battle:end.
+ * Passes auth token in handshake so the server's session middleware accepts the connection.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -26,7 +27,7 @@ export interface BattleSocketState {
 
 let logIdCounter = 0;
 
-export function useBattleSocket(battleId: string | undefined) {
+export function useBattleSocket(battleId: string | undefined, authToken?: string | null) {
   const socketRef = useRef<ReturnType<typeof io> | null>(null);
   const [state, setState] = useState<BattleSocketState>({
     logs: [],
@@ -36,11 +37,18 @@ export function useBattleSocket(battleId: string | undefined) {
 
   const connect = useCallback(() => {
     if (!battleId) return;
-    const socket = io(SOCKET_URL, { autoConnect: true });
+    const socket = io(SOCKET_URL, {
+      autoConnect: true,
+      auth: authToken ? { token: authToken } : undefined,
+    });
     socketRef.current = socket;
 
     socket.on("connect", () => {
       socket.emit("battle:subscribe", { battleId });
+    });
+
+    socket.on("connect_error", (err) => {
+      console.warn("[BattleSocket] Connection error:", err.message);
     });
 
     socket.on("battle:start", (data: { battleId: string; agentA?: { id: string; name: string }; agentB?: { id: string; name: string }; gameMode?: string }) => {
@@ -85,7 +93,7 @@ export function useBattleSocket(battleId: string | undefined) {
     });
 
     socket.connect();
-  }, [battleId]);
+  }, [battleId, authToken]);
 
   useEffect(() => {
     if (battleId) connect();

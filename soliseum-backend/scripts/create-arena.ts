@@ -118,9 +118,9 @@ async function main() {
       creatorAddress: creatorPubkey,
       oracleAddress: creatorPubkey,
       status: "Live",
-      totalPool: 0,
-      agentAPool: 0,
-      agentBPool: 0,
+      totalPool: BigInt(0),
+      agentAPool: BigInt(0),
+      agentBPool: BigInt(0),
     });
     console.log("Arena seeded in database.");
   }

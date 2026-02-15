@@ -4,11 +4,7 @@
 
 import { Chess } from "chess.js";
 import type { QuickChessChallenge } from "../types";
-
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9999) * 10000;
-  return x - Math.floor(x);
-}
+import { seededRandom } from "../../utils/seededRandom";
 
 /** Play random legal moves from start to reach a mid-game position. */
 function randomMidgame(seed: number): { fen: string; sideToMove: "w" | "b" } {

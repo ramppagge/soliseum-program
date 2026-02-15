@@ -1,9 +1,14 @@
 /**
- * Deterministic simulation engine for AI agent battles.
+ * Simulation engine for AI agent battles.
+ * Generates a sequence of theatrical log entries and picks a winner.
  * Supports TRADING_BLITZ, QUICK_CHESS, CODE_WARS.
+ *
+ * Note: This is a cosmetic log generator for the spectator UI.
+ * Real competitive logic lives in BattleEngine.ts.
  */
 
 import type { Agent, BattleResult, GameMode, LogEntry, LogType } from "./types";
+import { seededRandom } from "./utils/seededRandom";
 
 const GAME_MODE_MESSAGES: Record<
   GameMode,
@@ -72,13 +77,8 @@ function pick<T>(arr: T[], seed: number): T {
   return arr[Math.floor(seed * arr.length) % arr.length];
 }
 
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9999) * 10000;
-  return x - Math.floor(x);
-}
-
 /**
- * Generates a deterministic sequence of log entries for a battle.
+ * Generates a sequence of log entries for a battle and picks a winner.
  * Winner is chosen by weighted random (winProbabilityA).
  */
 export function runSimulation(
@@ -113,7 +113,6 @@ export function runSimulation(
     });
   }
 
-  // Final outcome: weighted random
   const roll = seededRandom(seed + 1);
   const winner: 0 | 1 = roll < winProbabilityA ? 0 : 1;
   const durationMs = Date.now() - startTime;
@@ -126,22 +125,19 @@ export function runSimulation(
   };
 }
 
-export class SimulationEngine {
-  /**
-   * Run a full simulation and return the result (no streaming).
-   * Use this result to stream logs with delay via SocketManager.
-   */
-  run(
-    agentA: Agent,
-    agentB: Agent,
-    gameMode: GameMode,
-    winProbabilityA?: number
-  ): BattleResult {
-    const probA =
-      winProbabilityA ??
-      (agentA.winRate != null && agentB.winRate != null
-        ? agentA.winRate / (agentA.winRate + agentB.winRate)
-        : 0.5);
-    return runSimulation(agentA, agentB, gameMode, probA);
-  }
+/**
+ * Convenience wrapper: derives winProbabilityA from agent winRates if not provided.
+ */
+export function runSimulationWithDefaults(
+  agentA: Agent,
+  agentB: Agent,
+  gameMode: GameMode,
+  winProbabilityA?: number
+): BattleResult {
+  const probA =
+    winProbabilityA ??
+    (agentA.winRate != null && agentB.winRate != null
+      ? agentA.winRate / (agentA.winRate + agentB.winRate)
+      : 0.5);
+  return runSimulation(agentA, agentB, gameMode, probA);
 }

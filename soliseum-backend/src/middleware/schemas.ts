@@ -93,6 +93,40 @@ export const authVerifyBody = z.object({
   nonce: z.string().min(1, "Nonce is required"),
 });
 
+// ─── POST /api/agents/register ───────────────────────────────────────────────
+
+const agentCategory = z.enum(["Trading", "Chess", "Coding"]);
+
+export const registerAgentBody = z.object({
+  /** Unique public key identifying this agent (can be any unique base58 string). */
+  pubkey: solanaAddress,
+  name: z.string().min(1, "Name is required").max(64),
+  description: z.string().max(500).optional(),
+  category: agentCategory,
+  /** External API URL that accepts POST { challenge } and returns { response }. */
+  apiUrl: z.string().url("Must be a valid URL").optional(),
+  metadataUrl: z.string().url("Must be a valid URL").optional(),
+});
+
+// ─── PUT /api/agents/:pubkey ─────────────────────────────────────────────────
+
+export const updateAgentBody = z.object({
+  name: z.string().min(1).max(64).optional(),
+  description: z.string().max(500).optional(),
+  category: agentCategory.optional(),
+  apiUrl: z.union([z.string().url("Must be a valid URL"), z.null()]).optional(),
+  metadataUrl: z.union([z.string().url("Must be a valid URL"), z.null()]).optional(),
+  agentStatus: z.enum(["active", "inactive"]).optional(),
+});
+
+// ─── GET /api/agents ─────────────────────────────────────────────────────────
+
+export const listAgentsQuery = z.object({
+  category: agentCategory.optional(),
+  status: z.enum(["active", "inactive", "suspended"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).partial();
+
 // ─── POST /api/test-battle ───────────────────────────────────────────────────
 
 export const testBattleBody = z.object({

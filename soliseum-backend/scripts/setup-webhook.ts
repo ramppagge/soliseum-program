@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   const body = {
     webhookURL: webhookUrl,
     webhookType,
+    transactionTypes: ["Any"],
     accountAddresses: [SOLISEUM_PROGRAM_ID],
     authHeader: webhookSecret || undefined,
   };

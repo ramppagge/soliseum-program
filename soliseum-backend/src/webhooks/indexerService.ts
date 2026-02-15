@@ -21,7 +21,21 @@ export async function applyPlaceStake(
   side: number,
   txSignature: string
 ): Promise<void> {
-  const amountNum = Number(amount);
+  // Idempotency: skip if this tx_signature was already processed (Helius may retry webhooks)
+  if (txSignature) {
+    const [existing] = await db
+      .select({ id: stakes.id })
+      .from(stakes)
+      .where(eq(stakes.txSignature, txSignature))
+      .limit(1);
+    if (existing) {
+      console.warn(`[Indexer] Skipping duplicate tx_signature: ${txSignature}`);
+      return;
+    }
+  }
+
+  // Use BigInt throughout to preserve full lamport precision (Number loses precision > 2^53)
+  const amountBig = BigInt(amount);
 
   // Ensure arena exists (may have been created by initialize_arena or our oracle)
   const [arena] = await db
@@ -37,22 +51,22 @@ export async function applyPlaceStake(
       creatorAddress: "", // Unknown until we fetch from chain
       oracleAddress: "",
       status: "Live",
-      totalPool: amountNum,
-      agentAPool: side === 0 ? amountNum : 0,
-      agentBPool: side === 1 ? amountNum : 0,
+      totalPool: amountBig,
+      agentAPool: side === 0 ? amountBig : 0n,
+      agentBPool: side === 1 ? amountBig : 0n,
     });
   } else {
     await db
       .update(arenas)
       .set({
-        totalPool: sql`${arenas.totalPool} + ${amountNum}`,
+        totalPool: sql`${arenas.totalPool} + ${amountBig.toString()}::bigint`,
         agentAPool:
           side === 0
-            ? sql`${arenas.agentAPool} + ${amountNum}`
+            ? sql`${arenas.agentAPool} + ${amountBig.toString()}::bigint`
             : sql`${arenas.agentAPool}`,
         agentBPool:
           side === 1
-            ? sql`${arenas.agentBPool} + ${amountNum}`
+            ? sql`${arenas.agentBPool} + ${amountBig.toString()}::bigint`
             : sql`${arenas.agentBPool}`,
         updatedAt: new Date(),
       })
@@ -66,12 +80,12 @@ export async function applyPlaceStake(
     .limit(1);
   const arenaId = arenaRow!.id;
 
-  // Upsert stake (user can add to existing stake)
+  // Upsert stake (user can add to existing stake on same side)
   const [existingStake] = await db
     .select()
     .from(stakes)
     .where(
-      and(eq(stakes.arenaId, arenaId), eq(stakes.userAddress, userAddress))
+      and(eq(stakes.arenaId, arenaId), eq(stakes.userAddress, userAddress), eq(stakes.side, side))
     )
     .limit(1);
 
@@ -79,7 +93,8 @@ export async function applyPlaceStake(
     await db
       .update(stakes)
       .set({
-        amount: sql`${stakes.amount} + ${amountNum}`,
+        amount: sql`${stakes.amount} + ${amountBig.toString()}::bigint`,
+        txSignature,
         updatedAt: new Date(),
       })
       .where(eq(stakes.id, existingStake.id));
@@ -87,7 +102,7 @@ export async function applyPlaceStake(
     await db.insert(stakes).values({
       userAddress,
       arenaId,
-      amount: amountNum,
+      amount: amountBig,
       side,
       claimed: false,
       txSignature,
@@ -99,12 +114,12 @@ export async function applyPlaceStake(
     .insert(users)
     .values({
       walletAddress: userAddress,
-      totalStaked: amountNum,
+      totalStaked: amountBig,
     })
     .onConflictDoUpdate({
       target: users.walletAddress,
       set: {
-        totalStaked: sql`${users.totalStaked} + ${amountNum}`,
+        totalStaked: sql`${users.totalStaked} + ${amountBig.toString()}::bigint`,
         updatedAt: new Date(),
       },
     });
@@ -220,9 +235,9 @@ export async function applyInitializeArena(
       creatorAddress,
       oracleAddress: "", // Will be set when we fetch full arena data
       status: "Live",
-      totalPool: 0,
-      agentAPool: 0,
-      agentBPool: 0,
+      totalPool: 0n,
+      agentAPool: 0n,
+      agentBPool: 0n,
       startTime: new Date(),
     });
   }
@@ -252,9 +267,9 @@ export async function applyResetArena(arenaAddress: string): Promise<void> {
     .update(arenas)
     .set({
       status: "Live",
-      totalPool: 0,
-      agentAPool: 0,
-      agentBPool: 0,
+      totalPool: 0n,
+      agentAPool: 0n,
+      agentBPool: 0n,
       winnerSide: null,
       updatedAt: new Date(),
     })

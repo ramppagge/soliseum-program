@@ -52,6 +52,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!connected) logout();
   }, [connected, logout]);
 
+  // Auto-login when wallet connects and no valid token exists
+  useEffect(() => {
+    if (connected && publicKey && signMessage && !token && !isLoading) {
+      login();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, publicKey, signMessage]);
+
   const login = useCallback(async (): Promise<boolean> => {
     if (!publicKey || !signMessage) {
       setError("Wallet not connected or does not support message signing");
