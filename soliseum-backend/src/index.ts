@@ -1,9 +1,10 @@
 /**
- * Soliseum Simulation Engine & Oracle Service (Phase 2)
+ * Soliseum Simulation Engine & Oracle Service (Phase 2 + Phase 3)
  * - REST + Socket.io trigger for battles
  * - SimulationEngine runs deterministic battle
  * - SocketManager streams logs to Battle Station (battle:start, battle:log, battle:end)
  * - SolanaService settles winner on-chain
+ * - Zod validation, rate limiting, wallet auth
  */
 
 import "dotenv/config";
@@ -21,14 +22,37 @@ import {
   getUserHistory,
   getAgentByPubkey,
 } from "./api/routes";
+import {
+  validate,
+  startBattleBody,
+  testBattleBody,
+  activeArenasQuery,
+  leaderboardQuery,
+  userHistoryParams,
+  agentPubkeyParams,
+  authNonceBody,
+  authVerifyBody,
+  apiLimiter,
+  battleLimiter,
+  authLimiter,
+  webhookLimiter,
+  issueNonce,
+  verifySignature,
+  requireAuth,
+} from "./middleware";
+import { BattleEngine, HttpAgentClient, MockAgent } from "./battle-engine";
+import type { AgentConfig } from "./battle-engine";
 
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
-const SOCKET_PORT = parseInt(process.env.SOCKET_PORT ?? "4001", 10);
+/** Use same port for Socket.io when SOCKET_PORT unset (e.g. Render/Railway single-port deployment) */
+const SOCKET_PORT = process.env.SOCKET_PORT
+  ? parseInt(process.env.SOCKET_PORT, 10)
+  : PORT;
 const app = express();
 const httpServer = createServer(app);
 
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 // Log every request (helps debug)
 app.use((req, _res, next) => {
@@ -53,35 +77,9 @@ const simulationEngine = new SimulationEngine();
 const socketManager = new SocketManager();
 const solanaService = new SolanaService();
 
-// Socket.io on its own server (port 4001). Browsers: do NOT open 4001 in a tab — it's for socket.io client only and may hang.
-const socketHttpServer = createServer();
+// Socket.io: same server as Express when SOCKET_PORT === PORT (deployment); else separate server (local dev)
+const socketHttpServer = SOCKET_PORT === PORT ? httpServer : createServer();
 socketManager.attach(socketHttpServer);
-
-/** Validate and normalize payload from body or socket. */
-function normalizePayload(body: unknown): StartBattlePayload {
-  const b = body as Record<string, unknown>;
-  if (!b || typeof b.battleId !== "string" || typeof b.arenaAddress !== "string") {
-    throw new Error("Missing or invalid battleId / arenaAddress");
-  }
-  if (!b.agentA || typeof (b.agentA as any).name !== "string") {
-    throw new Error("Invalid agentA");
-  }
-  if (!b.agentB || typeof (b.agentB as any).name !== "string") {
-    throw new Error("Invalid agentB");
-  }
-  const gameMode = (b.gameMode as StartBattlePayload["gameMode"]) ?? "TRADING_BLITZ";
-  const validModes: StartBattlePayload["gameMode"][] = ["TRADING_BLITZ", "QUICK_CHESS", "CODE_WARS"];
-  const mode = validModes.includes(gameMode) ? gameMode : "TRADING_BLITZ";
-
-  return {
-    battleId: b.battleId as string,
-    arenaAddress: b.arenaAddress as string,
-    agentA: b.agentA as StartBattlePayload["agentA"],
-    agentB: b.agentB as StartBattlePayload["agentB"],
-    gameMode: mode,
-    winProbabilityA: typeof b.winProbabilityA === "number" ? b.winProbabilityA : undefined,
-  };
-}
 
 /** Run one full battle: simulate, stream logs, settle on-chain. */
 async function runBattle(payload: StartBattlePayload): Promise<{ winner: number; txSignature?: string }> {
@@ -118,63 +116,208 @@ async function runBattle(payload: StartBattlePayload): Promise<{ winner: number;
   return { winner: result.winner, txSignature };
 }
 
-// Phase 3: Webhook & Data API
-app.post("/api/webhooks/solana", (req, res) => handleSolanaWebhook(req, res));
+// ─── Auth endpoints (public, rate-limited) ───────────────────────────────────
+app.post(
+  "/api/auth/nonce",
+  authLimiter,
+  validate({ body: authNonceBody }),
+  issueNonce
+);
 
-app.get("/api/arena/active", (req, res) => getActiveArenas(req, res));
-app.get("/api/leaderboard", (req, res) => getLeaderboard(req, res));
-app.get("/api/user/:address/history", (req, res) => getUserHistory(req, res));
-app.get("/api/agents/:pubkey", (req, res) => getAgentByPubkey(req, res));
+app.post(
+  "/api/auth/verify",
+  authLimiter,
+  validate({ body: authVerifyBody }),
+  verifySignature
+);
 
-// REST: start a battle
-app.post("/battle/start", async (req, res) => {
-  try {
-    const payload = normalizePayload(req.body);
-    const out = await runBattle(payload);
-    res.json({ ok: true, winner: out.winner, txSignature: out.txSignature });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    console.error("[POST /battle/start]", message);
-    res.status(400).json({ ok: false, error: message });
+// ─── Webhook (secret-validated, separate rate limit) ─────────────────────────
+app.post(
+  "/api/webhooks/solana",
+  webhookLimiter,
+  (req, res) => handleSolanaWebhook(req, res)
+);
+
+// ─── Public data endpoints (rate-limited + validated) ────────────────────────
+app.get(
+  "/api/arena/active",
+  apiLimiter,
+  validate({ query: activeArenasQuery }),
+  (req, res) => getActiveArenas(req, res)
+);
+
+app.get(
+  "/api/leaderboard",
+  apiLimiter,
+  validate({ query: leaderboardQuery }),
+  (req, res) => getLeaderboard(req, res)
+);
+
+app.get(
+  "/api/user/:address/history",
+  apiLimiter,
+  validate({ params: userHistoryParams }),
+  (req, res) => getUserHistory(req, res)
+);
+
+app.get(
+  "/api/agents/:pubkey",
+  apiLimiter,
+  validate({ params: agentPubkeyParams }),
+  (req, res) => getAgentByPubkey(req, res)
+);
+
+// ─── Test Battle (Battle Engine - MockAgent or external APIs) ─────────────────
+app.post(
+  "/api/test-battle",
+  apiLimiter,
+  validate({ body: testBattleBody }),
+  async (req, res) => {
+    const startTime = Date.now();
+    try {
+      const { agentA: a, agentB: b, gameMode: reqGameMode } = req.body as {
+        agentA: { id: string; name: string; apiUrl?: string | null };
+        agentB: { id: string; name: string; apiUrl?: string | null };
+        gameMode?: "TRADING_BLITZ" | "QUICK_CHESS" | "CODE_WARS";
+      };
+
+      const configA: AgentConfig = { id: a.id, name: a.name, apiUrl: a.apiUrl ?? null };
+      const configB: AgentConfig = { id: b.id, name: b.name, apiUrl: b.apiUrl ?? null };
+
+      const agentAClient = configA.apiUrl ? new HttpAgentClient(configA) : new MockAgent(configA, 0);
+      const agentBClient = configB.apiUrl ? new HttpAgentClient(configB) : new MockAgent(configB, 1);
+
+      const battleId = `test-${Date.now()}`;
+      const gameModes: Array<"TRADING_BLITZ" | "QUICK_CHESS" | "CODE_WARS"> = reqGameMode
+        ? [reqGameMode]
+        : ["TRADING_BLITZ", "CODE_WARS", "QUICK_CHESS"];
+
+      socketManager.getIO()?.emit("battle:start", {
+        battleId,
+        agentA: { id: a.id, name: a.name },
+        agentB: { id: b.id, name: b.name },
+        gameMode: gameModes.length === 1 ? gameModes[0] : "multi",
+      });
+
+      const engine = new BattleEngine();
+      let totalWinnerA = 0;
+      let totalWinnerB = 0;
+
+      for (let i = 0; i < 3; i++) {
+        const mode = gameModes[i]!;
+        const roundResult = await engine.run(agentAClient, agentBClient, mode, {
+          onLog: (log) => socketManager.emitBattleEngineLog(battleId, log),
+          onDominance: (score) => {
+            socketManager.emitBattleDominance(battleId, score);
+          },
+          seed: Date.now() + i,
+        });
+
+        if (roundResult.winner_side === 0) totalWinnerA++;
+        else totalWinnerB++;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+
+      const finalWinner = totalWinnerA >= totalWinnerB ? 0 : 1;
+      const durationMs = Date.now() - startTime;
+      const roundCount = gameModes.length;
+
+      socketManager.emitBattleEngineEnd(battleId, {
+        winner_side: finalWinner as 0 | 1,
+        gameMode: roundCount === 1 ? gameModes[0]! : "multi",
+        durationMs,
+        summary: `Test battle: Agent ${finalWinner === 0 ? "A" : "B"} won ${Math.max(totalWinnerA, totalWinnerB)}/${roundCount} rounds.`,
+        scores: { agent_a: totalWinnerA, agent_b: totalWinnerB },
+      });
+
+      res.json({
+        ok: true,
+        battleId,
+        winner_side: finalWinner,
+        summary: `Agent ${finalWinner === 0 ? "A" : "B"} won ${Math.max(totalWinnerA, totalWinnerB)}/${roundCount} rounds.`,
+        scores: { agent_a: totalWinnerA, agent_b: totalWinnerB },
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[POST /api/test-battle]", message);
+      res.status(500).json({ ok: false, error: message });
+    }
   }
+);
+
+// ─── Battle start (authenticated + validated + strict rate limit) ────────────
+app.get("/battle/start", (_req, res) => {
+  res.status(405).json({
+    ok: false,
+    error: "Method not allowed",
+    message: "Use POST to start a battle. Include Authorization: Bearer <token> and JSON body with battleId, arenaAddress, agentA, agentB, gameMode.",
+  });
 });
 
-// Root — match both "/" and "" so browser always gets 200 (same pattern as /health)
+app.post(
+  "/battle/start",
+  battleLimiter,
+  requireAuth,
+  validate({ body: startBattleBody }),
+  async (req, res) => {
+    try {
+      const payload = req.body as StartBattlePayload;
+      const out = await runBattle(payload);
+      res.json({ ok: true, winner: out.winner, txSignature: out.txSignature });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[POST /battle/start]", message);
+      res.status(500).json({ ok: false, error: message });
+    }
+  }
+);
+
+// ─── Root info ───────────────────────────────────────────────────────────────
 app.get(["/", ""], (_req, res) => {
   res.status(200).json({
     service: "Soliseum Oracle",
     status: "ok",
+    version: "3.0.0",
     endpoints: {
       "GET /": "this info",
       "GET /health": "health check",
-      "POST /battle/start": "start battle (body: battleId, arenaAddress, agentA, agentB, gameMode)",
+      "POST /api/auth/nonce": "get auth nonce (body: walletAddress)",
+      "POST /api/auth/verify": "verify signature (body: walletAddress, signature, nonce)",
+      "POST /battle/start": "start battle [auth required] (body: battleId, arenaAddress, agentA, agentB, gameMode)",
       "POST /api/webhooks/solana": "Helius/Shyft webhook (header: x-helius-webhook-secret)",
       "GET /api/arena/active": "live battles with pool sizes",
       "GET /api/leaderboard": "top agents by credibility",
       "GET /api/user/:address/history": "user stakes and winnings",
       "GET /api/agents/:pubkey": "agent profile + battle sparkline",
+      "POST /api/test-battle": "Battle Engine test (agentA, agentB, gameMode) - streams via Socket.io",
     },
-    socket: `Use socket.io client at http://localhost:${SOCKET_PORT} (do not open 4001 in browser).`,
+    socket: SOCKET_PORT === PORT
+      ? `Socket.io on same URL (single-port mode)`
+      : `Use socket.io client at port ${SOCKET_PORT}`,
   });
 });
 
 app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok", service: "soliseum-oracle" });
+  res.status(200).json({ status: "ok", service: "soliseum-oracle", uptime: process.uptime() });
 });
 
-// Favicon so browser doesn't request it and get 404
 app.get("/favicon.ico", (_req, res) => {
   res.status(204).end();
 });
 
-// Socket: optional trigger for starting a battle from the Battle Station
+// ─── Socket: battle trigger from Battle Station ──────────────────────────────
 const io = socketManager.getIO();
 if (io) {
   io.on("connection", (socket) => {
     socket.on("battle:request", async (body: unknown, ack?: (arg: unknown) => void) => {
       try {
-        const payload = normalizePayload(body);
-        const out = await runBattle(payload);
+        // Validate via Zod for socket payloads too
+        const parsed = startBattleBody.safeParse(body);
+        if (!parsed.success) {
+          ack?.({ ok: false, error: "Validation failed", details: parsed.error.issues });
+          return;
+        }
+        const out = await runBattle(parsed.data);
         ack?.({ ok: true, winner: out.winner, txSignature: out.txSignature });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -184,37 +327,69 @@ if (io) {
   });
 }
 
-// 404 for unknown routes (always send valid HTTP)
+// ─── 404 ─────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
-  res.status(404).json({ error: "Not found", path: _req.path });
+  res.status(404).json({ ok: false, error: "Not found", path: _req.path });
 });
 
-// Global error handler so we never leave the client with an invalid response
+// ─── Global error handler ────────────────────────────────────────────────────
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[Express error]", err);
   if (!res.headersSent) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : "Internal server error",
+    });
   }
 });
 
-socketHttpServer.on("error", (err) => {
-  console.error("[Socket server error]", err);
-});
-
+// ─── Server startup ──────────────────────────────────────────────────────────
 httpServer.on("error", (err) => {
   console.error("[API server error]", err);
 });
 
-socketHttpServer.listen(SOCKET_PORT, "0.0.0.0", () => {
-  console.log(`Socket.io listening on http://localhost:${SOCKET_PORT}`);
-});
+if (SOCKET_PORT !== PORT) {
+  socketHttpServer.on("error", (err) => {
+    console.error("[Socket server error]", err);
+  });
+  socketHttpServer.listen(SOCKET_PORT, "0.0.0.0", () => {
+    console.log(`Socket.io listening on port ${SOCKET_PORT}`);
+  });
+}
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   const addr = httpServer.address();
   const port = typeof addr === "object" && addr ? addr.port : PORT;
-  console.log(`Soliseum Oracle (API) listening on http://localhost:${port}`);
-  console.log("  Open in browser: http://localhost:" + port + "/");
+  console.log(`Soliseum Oracle (API) listening on port ${port}`);
   console.log("  GET  /health   — health check");
-  console.log("  POST /battle/start — start battle");
-  console.log(`  Socket.io: port ${SOCKET_PORT} (use socket.io client only; do not open in browser)`);
+  console.log("  POST /battle/start — start battle (auth required)");
+  if (SOCKET_PORT === PORT) {
+    console.log(`  Socket.io: same port ${port} (single-port mode for deployment)`);
+  } else {
+    console.log(`  Socket.io: port ${SOCKET_PORT}`);
+  }
 });
+
+// ─── Graceful shutdown ───────────────────────────────────────────────────────
+function gracefulShutdown(signal: string) {
+  console.log(`\n[${signal}] Shutting down gracefully...`);
+
+  httpServer.close(() => {
+    console.log("[Shutdown] API server closed");
+  });
+
+  if (SOCKET_PORT !== PORT) {
+    socketHttpServer.close(() => {
+      console.log("[Shutdown] Socket server closed");
+    });
+  }
+
+  // Force exit after 10 seconds if connections linger
+  setTimeout(() => {
+    console.error("[Shutdown] Forcing exit after timeout");
+    process.exit(1);
+  }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

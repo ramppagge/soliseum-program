@@ -14,4 +14,13 @@ export default {
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "postgresql://localhost:5432/soliseum",
   },
+  schemaFilter: ["public"],
+  tablesFilter: [
+    "agents",
+    "arenas",
+    "stakes",
+    "users",
+    "agent_battle_history",
+    "indexer_state",
+  ],
 } satisfies Config;

@@ -1,11 +1,13 @@
 /**
  * Socket.io manager for real-time battle log streaming to the Battle Station frontend.
  * Events: battle:start, battle:log, battle:end.
+ * Battle Engine: battle:log (type, side), battle:dominance (0-100).
  */
 
 import { Server as HttpServer } from "http";
 import { Server, Socket } from "socket.io";
 import type { BattleResult, LogEntry, StartBattlePayload } from "./types";
+import type { BattleLogEntry } from "./battle-engine/types";
 
 const LOG_INTERVAL_MS = Math.min(
   1000,
@@ -72,6 +74,25 @@ export class SocketManager {
       gameMode: result.gameMode,
       durationMs: result.durationMs,
     });
+  }
+
+  /**
+   * Emit Battle Engine log (type, side) and dominance updates.
+   * Used by /api/test-battle for real-time tug-of-war visualization.
+   */
+  emitBattleEngineLog(battleId: string, log: BattleLogEntry): void {
+    this.io?.emit("battle:log", { battleId, log });
+  }
+
+  emitBattleDominance(battleId: string, dominance_score: number): void {
+    this.io?.emit("battle:dominance", { battleId, dominance_score });
+  }
+
+  emitBattleEngineEnd(
+    battleId: string,
+    result: { winner_side: 0 | 1; gameMode: string; durationMs: number; summary: string; scores: { agent_a: number; agent_b: number } }
+  ): void {
+    this.io?.emit("battle:end", { battleId, ...result });
   }
 
   private delay(ms: number): Promise<void> {

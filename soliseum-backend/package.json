@@ -11,24 +11,33 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "sync": "ts-node scripts/sync.ts"
+    "sync": "ts-node scripts/sync.ts",
+    "setup:oracle": "ts-node scripts/setup-oracle.ts",
+    "fund:oracle": "ts-node scripts/fund-oracle.ts",
+    "setup:webhook": "ts-node scripts/setup-webhook.ts",
+    "db:migrate:run": "ts-node scripts/run-migration.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
     "@solana/web3.js": "^1.95.0",
+    "@types/express-serve-static-core": "^5.1.1",
     "bs58": "^6.0.0",
+    "chess.js": "^1.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.36.0",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.2.1",
     "postgres": "^3.4.4",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "tweetnacl": "^1.0.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.9.0",
-    "drizzle-kit": "^0.28.0",
+    "drizzle-kit": "^0.31.9",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.6.3"

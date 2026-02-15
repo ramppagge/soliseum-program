@@ -28,6 +28,17 @@ function setCache(key: string, data: unknown, ttlMs = CACHE_TTL_MS): void {
   cache.set(key, { data, expires: Date.now() + ttlMs });
 }
 
+function handleDbError(err: unknown, res: Response, context: string): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[API] ${context}:`, message);
+  if (!res.headersSent) {
+    res.status(500).json({
+      error: "Database unavailable",
+      details: process.env.NODE_ENV === "development" ? message : undefined,
+    });
+  }
+}
+
 /** GET /api/arena/active - Live battles with pool sizes */
 export async function getActiveArenas(_req: Request, res: Response): Promise<void> {
   const cacheKey = "arena:active";
@@ -37,6 +48,7 @@ export async function getActiveArenas(_req: Request, res: Response): Promise<voi
     return;
   }
 
+  try {
   const rows = await db
     .select({
       id: arenas.id,
@@ -62,6 +74,9 @@ export async function getActiveArenas(_req: Request, res: Response): Promise<voi
 
   setCache(cacheKey, data);
   res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getActiveArenas");
+  }
 }
 
 /** GET /api/leaderboard - Top agents by credibility and win rate */
@@ -73,6 +88,7 @@ export async function getLeaderboard(_req: Request, res: Response): Promise<void
     return;
   }
 
+  try {
   const limit = Math.min(
     parseInt(String(_req.query?.limit ?? 50), 10) || 50,
     100
@@ -102,6 +118,9 @@ export async function getLeaderboard(_req: Request, res: Response): Promise<void
 
   setCache(cacheKey, data);
   res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getLeaderboard");
+  }
 }
 
 /** GET /api/user/:address/history - User stakes and winnings */
@@ -112,6 +131,7 @@ export async function getUserHistory(req: Request, res: Response): Promise<void>
     return;
   }
 
+  try {
   const cacheKey = `user:history:${address}`;
   const cached = getCached<object[]>(cacheKey);
   if (cached) {
@@ -151,6 +171,9 @@ export async function getUserHistory(req: Request, res: Response): Promise<void>
 
   setCache(cacheKey, data, 10_000);
   res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getUserHistory");
+  }
 }
 
 /** GET /api/agents/:pubkey - Full agent profile + battle history sparkline */
@@ -161,6 +184,7 @@ export async function getAgentByPubkey(req: Request, res: Response): Promise<voi
     return;
   }
 
+  try {
   const cacheKey = `agent:${pubkey}`;
   const cached = getCached<object>(cacheKey);
   if (cached) {
@@ -219,4 +243,7 @@ export async function getAgentByPubkey(req: Request, res: Response): Promise<voi
 
   setCache(cacheKey, data, 10_000);
   res.json(data);
+  } catch (err) {
+    handleDbError(err, res, "getAgentByPubkey");
+  }
 }
