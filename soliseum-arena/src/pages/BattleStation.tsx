@@ -338,7 +338,10 @@ export default function BattleStation() {
                   });
                 }
               }}
-              onResultClose={() => setBattleEnd(null)}
+              onResultClose={() => {
+                setBattleEnd(null);
+                navigate("/arena");
+              }}
             />
           </div>
 

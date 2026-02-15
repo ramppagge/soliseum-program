@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Lock, Zap } from "lucide-react";
+import { Lock, Wallet } from "lucide-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 
 interface GatekeeperOverlayProps {
@@ -58,15 +58,16 @@ export function GatekeeperOverlay({ children, isProtected, isConnected }: Gateke
               Connect your Solana wallet to access this secure terminal.
             </p>
 
-            {/* INITIALIZE CONNECTION button */}
+            {/* Connect Wallet button - same as Navbar WalletButton */}
             <motion.button
+              type="button"
               whileHover={{ scale: 1.03, boxShadow: "0 0 30px hsl(var(--neon-teal) / 0.4)" }}
               whileTap={{ scale: 0.98 }}
               onClick={() => setVisible(true)}
-              className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-display text-base font-bold text-primary-foreground bg-primary glow-teal border-2 border-secondary/50 transition-all hover:border-secondary"
+              className="relative z-10 w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-display text-base font-bold text-primary-foreground bg-primary glow-teal border-2 border-secondary/50 transition-all hover:border-secondary cursor-pointer"
             >
-              <Zap className="w-5 h-5" />
-              INITIALIZE CONNECTION
+              <Wallet className="w-5 h-5" />
+              Connect Wallet
             </motion.button>
           </div>
         </motion.div>

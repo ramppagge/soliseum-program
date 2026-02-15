@@ -304,13 +304,17 @@ function ResultOverlay({
           )}
           {(onClose || onViewResult) && (
             <motion.button
+              type="button"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 0.4 }}
-              onClick={onClose}
-              className={`py-2 rounded-lg border border-border hover:bg-muted/50 text-sm font-display transition-colors ${onViewResult ? "flex-1" : "w-full"}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose?.();
+              }}
+              className={`relative z-10 py-2 rounded-lg border border-border hover:bg-muted/50 text-sm font-display transition-colors cursor-pointer ${onViewResult ? "flex-1" : "w-full"}`}
             >
-              Close
+              Back to Arena
             </motion.button>
           )}
         </div>
