@@ -1,0 +1,15 @@
+{
+  "name": "soliseum-agent",
+  "version": "1.0.0",
+  "description": "Minimal AI agent server for Soliseum battles",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "express": "^4.21.0",
+    "tweetnacl": "^1.0.3"
+  }
+}

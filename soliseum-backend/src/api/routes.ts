@@ -16,6 +16,19 @@ import {
 
 // Simple in-memory cache (use Redis in production)
 const cache = new Map<string, { data: unknown; expires: number }>();
+
+/** Batch-resolve agent names from the agents table by pubkey. */
+async function resolveAgentNames(pubkeys: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (pubkeys.length === 0) return result;
+  const rows = await db
+    .select({ pubkey: agents.pubkey, name: agents.name })
+    .from(agents);
+  for (const r of rows) {
+    if (pubkeys.includes(r.pubkey)) result.set(r.pubkey, r.name);
+  }
+  return result;
+}
 const CACHE_TTL_MS = 15_000; // 15 seconds
 
 function getCached<T>(key: string): T | null {
@@ -117,11 +130,21 @@ export async function getActiveArenas(_req: Request, res: Response): Promise<voi
     .where(eq(arenas.status, "Live"))
     .orderBy(desc(arenas.createdAt));
 
+  // Resolve agent names from DB
+  const agentPubkeys = new Set<string>();
+  for (const r of rows) {
+    if (r.agentAPubkey) agentPubkeys.add(r.agentAPubkey);
+    if (r.agentBPubkey) agentPubkeys.add(r.agentBPubkey);
+  }
+  const agentNames = await resolveAgentNames(Array.from(agentPubkeys));
+
   const data = rows.map((r) => ({
     ...r,
     totalPool: Number(r.totalPool),
     agentAPool: Number(r.agentAPool),
     agentBPool: Number(r.agentBPool),
+    agentAName: r.agentAPubkey ? agentNames.get(r.agentAPubkey) ?? null : null,
+    agentBName: r.agentBPubkey ? agentNames.get(r.agentBPubkey) ?? null : null,
   }));
 
   setCache(cacheKey, data);
@@ -159,11 +182,21 @@ export async function getSettledArenas(_req: Request, res: Response): Promise<vo
       .where(eq(arenas.status, "Settled"))
       .orderBy(desc(arenas.updatedAt));
 
+    // Resolve agent names from DB
+    const settledPubkeys = new Set<string>();
+    for (const r of rows) {
+      if (r.agentAPubkey) settledPubkeys.add(r.agentAPubkey);
+      if (r.agentBPubkey) settledPubkeys.add(r.agentBPubkey);
+    }
+    const settledAgentNames = await resolveAgentNames(Array.from(settledPubkeys));
+
     const data = rows.map((r) => ({
       ...r,
       totalPool: Number(r.totalPool),
       agentAPool: Number(r.agentAPool),
       agentBPool: Number(r.agentBPool),
+      agentAName: r.agentAPubkey ? settledAgentNames.get(r.agentAPubkey) ?? null : null,
+      agentBName: r.agentBPubkey ? settledAgentNames.get(r.agentBPubkey) ?? null : null,
     }));
 
     setCache(cacheKey, data, 10_000);
@@ -204,11 +237,19 @@ export async function getArenaByAddress(req: Request, res: Response): Promise<vo
       return;
     }
 
+    // Resolve agent names
+    const addrPubkeys: string[] = [];
+    if (row.agentAPubkey) addrPubkeys.push(row.agentAPubkey);
+    if (row.agentBPubkey) addrPubkeys.push(row.agentBPubkey);
+    const addrAgentNames = await resolveAgentNames(addrPubkeys);
+
     res.json({
       ...row,
       totalPool: Number(row.totalPool),
       agentAPool: Number(row.agentAPool),
       agentBPool: Number(row.agentBPool),
+      agentAName: row.agentAPubkey ? addrAgentNames.get(row.agentAPubkey) ?? null : null,
+      agentBName: row.agentBPubkey ? addrAgentNames.get(row.agentBPubkey) ?? null : null,
     });
   } catch (err) {
     handleDbError(err, res, "getArenaByAddress");

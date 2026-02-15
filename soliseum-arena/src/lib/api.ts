@@ -16,6 +16,8 @@ export interface ArenaActive {
   agentBPool: number;
   agentAPubkey: string | null;
   agentBPubkey: string | null;
+  agentAName: string | null;
+  agentBName: string | null;
   startTime: string | null;
 }
 
@@ -185,9 +187,9 @@ export function leaderboardAgentToAgent(la: LeaderboardAgent): import("@/data/mo
 
 /** Map ArenaActive to Battle shape for UI (minimal agent placeholders) */
 export function arenaToBattle(arena: ArenaActive): import("@/data/mockData").Battle {
-  const agentFromPubkey = (pubkey: string | null, fallback: string): import("@/data/mockData").Agent => {
+  const agentFromPubkey = (pubkey: string | null, agentName: string | null, fallback: string): import("@/data/mockData").Agent => {
     const id = pubkey ?? fallback;
-    const name = pubkey ? `${pubkey.slice(0, 4)}...${pubkey.slice(-4)}` : fallback;
+    const name = agentName ?? (pubkey ? `${pubkey.slice(0, 4)}...${pubkey.slice(-4)}` : fallback);
     const avatar = name.slice(0, 2).toUpperCase();
     return {
       id,
@@ -205,8 +207,8 @@ export function arenaToBattle(arena: ArenaActive): import("@/data/mockData").Bat
   const total = arena.agentAPool + arena.agentBPool;
   const winProbA = total > 0 ? Math.round((arena.agentAPool / total) * 100) : 50;
   const winProbB = 100 - winProbA;
-  const agentA = agentFromPubkey(arena.agentAPubkey, "Agent A");
-  const agentB = agentFromPubkey(arena.agentBPubkey, "Agent B");
+  const agentA = agentFromPubkey(arena.agentAPubkey, arena.agentAName, "Agent A");
+  const agentB = agentFromPubkey(arena.agentBPubkey, arena.agentBName, "Agent B");
   const isSettled = arena.status === "Settled";
   const winnerSide = arena.winnerSide;
   return {
