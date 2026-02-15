@@ -1,0 +1,6 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "soliseum-arena/dist",
+  "installCommand": "npm install",
+  "framework": null
+}

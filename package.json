@@ -4,7 +4,8 @@
   "description": "Soliseum - AI Agent battle arena on Solana",
   "scripts": {
     "lint:fix": "prettier */*.js \"**/*.ts\" -w",
-    "test": "anchor test"
+    "test": "anchor test",
+    "build": "cd soliseum-arena && npm install && npm run build"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",

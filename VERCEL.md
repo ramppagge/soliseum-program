@@ -1,18 +1,12 @@
 # Vercel Deployment (Frontend)
 
-## Vercel project settings
-
-1. **Root Directory:** `soliseum-arena`
-2. **Framework Preset:** Vite
-3. **Build Command:** `npm run build` (default)
-4. **Output Directory:** `dist` (default)
+The root `vercel.json` and `package.json` build script run the frontend build from `soliseum-arena/`. No Root Directory setting needed.
 
 ## Environment variables (optional)
 
 - `VITE_API_URL` — backend API URL
 - `VITE_SOCKET_URL` — backend Socket.io URL (same as API URL when backend uses single-port)
 
-## If you see "vite: command not found"
+## Alternative: Root Directory
 
-- Set **Root Directory** to `soliseum-arena` in Project Settings → General.
-- Redeploy.
+You can also set **Root Directory** to `soliseum-arena` in Vercel Project Settings. Then the root build script is not used.
