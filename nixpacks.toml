@@ -1,0 +1,14 @@
+# Force Node.js build (overrides Rust/Anchor detection at repo root)
+# Deploys soliseum-backend, not the Solana program
+
+[phases.setup]
+nixPkgs = ["nodejs_18"]
+
+[phases.install]
+cmds = ["cd soliseum-backend && npm ci"]
+
+[phases.build]
+cmds = ["cd soliseum-backend && npm run build"]
+
+[start]
+cmd = "cd soliseum-backend && npm start"
