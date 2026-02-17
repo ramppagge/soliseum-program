@@ -47,12 +47,16 @@ export class BattleEngine {
     const startTime = Date.now();
     const logs: BattleLogEntry[] = [];
     const { onLog, onDominance, seed } = options;
-
+    
+    // Define emit outside try block so it's available in catch
     const emit = (side: AgentSide, type: BattleLogEntry["type"], message: string) => {
       const entry: BattleLogEntry = { timestamp: Date.now(), side, type, message };
       logs.push(entry);
       onLog?.(entry);
     };
+    
+    // Wrap entire battle in try/catch for robust error handling
+    try {
 
     const updateDominance = (scoreA: number, scoreB: number, lowerIsBetter: boolean) => {
       const dominance = lowerIsBetter
@@ -198,5 +202,25 @@ export class BattleEngine {
       scores: { agent_a: scoreA, agent_b: scoreB },
       logs,
     };
+    } catch (error) {
+      // Global error handler - ensure battle always returns a result
+      const durationMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      emit("agent_a", "error", `Battle engine error: ${errorMessage}`);
+      emit("agent_b", "error", `Battle engine error: ${errorMessage}`);
+      
+      console.error(`[BattleEngine] Critical error in ${gameMode}:`, error);
+      
+      // Return default result - Agent A wins on error (can be randomized in future)
+      return {
+        winner_side: 0,
+        gameMode,
+        durationMs,
+        summary: `Battle failed due to engine error: ${errorMessage}. Agent A wins by default.`,
+        scores: { agent_a: 0, agent_b: 0 },
+        logs,
+      };
+    }
   }
 }
