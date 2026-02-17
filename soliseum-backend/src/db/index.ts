@@ -20,23 +20,24 @@ const isTransactionPooler = connectionString.includes(":6543");
 
 // Configure postgres.js based on pooler type
 const client = postgres(connectionString, {
-  // Transaction pooler can handle more connections
-  // Session pooler (port 5432) is limited to ~10
-  max: isTransactionPooler ? 10 : 3,
+  // Connection pool sizing
+  // Local DB: use more connections since we're the only client
+  // Supabase: use fewer to avoid hitting limits
+  max: isTransactionPooler ? 10 : 20,
   
   // Connection settings for stability
-  idle_timeout: 20,          // Close idle connections after 20s
-  connect_timeout: 10,       // 10s connection timeout (was 5s)
-  max_lifetime: 60 * 5,      // Recycle connections after 5 minutes
+  idle_timeout: 30,          // Close idle connections after 30s
+  connect_timeout: 15,       // 15s connection timeout
+  max_lifetime: 60 * 10,     // Recycle connections after 10 minutes
+  
+  // Keep connections alive - critical for battle operations
+  keep_alive: 60,            // TCP keepalive interval in seconds
   
   // Required for Supabase pooler
   prepare: false,            // Disable prepared statements
   fetch_types: false,        // Don't fetch type info (reduces queries)
   
-  // Debug mode (remove in production)
-  debug: process.env.NODE_ENV === "development" ? console.log : undefined,
-  
-  // Connection callback
+  // Connection callback for debugging
   onclose: () => {
     console.log("[DB] Connection closed");
   },

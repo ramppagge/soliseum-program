@@ -7,7 +7,7 @@ import "dotenv/config";
 import { sql } from "drizzle-orm";
 import { db } from "../src/db";
 
-const BATTLE_ID = "60c0fc33-5f25-4773-976c-5b7840ef4f91";
+const BATTLE_ID = "3e2c9ffc-c9f3-4299-a2a2-575edc4c1861";
 
 async function main() {
   console.log(`[FixStuckBattle] Updating battle ${BATTLE_ID}...`);
