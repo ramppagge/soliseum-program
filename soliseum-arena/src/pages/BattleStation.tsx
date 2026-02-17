@@ -94,8 +94,10 @@ function StakingPanel({
   const [stakeLoading, setStakeLoading] = useState(false);
 
   const isScheduled = !!scheduledBattle;
+  // Use API status as source of truth for staking lock
+  // Staking is only open when status is 'staking' AND countdown hasn't expired
   const isStakingOpen = isScheduled 
-    ? scheduledBattle.seconds_until_battle > 0 
+    ? scheduledBattle.status === "staking" && scheduledBattle.seconds_until_battle > 0
     : true;
 
   const probA = battle.winProbA ?? 50;
@@ -121,7 +123,62 @@ function StakingPanel({
       return;
     }
 
-    // For scheduled battles, use API stake
+    // For scheduled battles with on-chain arena, do on-chain stake first
+    if (isScheduled && scheduledBattle?.arena_address) {
+      setStakeLoading(true);
+      const toastId = toast.loading("Confirming on-chain transaction...");
+
+      try {
+        const { Transaction, PublicKey } = await import("@solana/web3.js");
+        const ix = await buildPlaceStakeInstruction(
+          connection,
+          new PublicKey(scheduledBattle.arena_address),
+          publicKey,
+          solToLamports(amount),
+          selectedAgent === "A" ? 0 : 1
+        );
+        const tx = new Transaction().add(ix);
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+        tx.recentBlockhash = blockhash;
+        tx.feePayer = publicKey;
+
+        const sig = await sendTransaction(tx, connection, { maxRetries: 5, skipPreflight: true });
+        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+
+        // Send tx signature to backend to record the stake
+        const res = await fetch(`${API_URL}/api/matchmaking/stake`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            battleId: scheduledBattle.id,
+            agentPubkey: selectedAgent === "A" ? scheduledBattle.agent_a_pubkey : scheduledBattle.agent_b_pubkey,
+            amount: solToLamports(amount).toString(),
+            txSignature: sig,
+          }),
+        });
+
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Failed to record stake");
+
+        toast.success(`Staked ${amount} SOL on ${selectedAgent === "A" ? battle.agentA.name : battle.agentB.name}!`, {
+          id: toastId,
+          action: { label: "View", onClick: () => window.open(`https://solscan.io/tx/${sig}`, "_blank") },
+        });
+        setSolAmount("");
+        onStakePlaced?.();
+        queryClient.invalidateQueries({ queryKey: ["matchmaking", "battles"] });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Transaction failed", { id: toastId });
+      } finally {
+        setStakeLoading(false);
+      }
+      return;
+    }
+
+    // For scheduled battles without on-chain arena (fallback), use API-only stake
     if (isScheduled && scheduledBattle) {
       setStakeLoading(true);
       try {
@@ -338,13 +395,22 @@ export default function BattleStation() {
     return activeBattles?.battles.find((b) => b.battle_id === battleId);
   }, [activeBattles, battleId]);
 
+  // Determine battle status from API (source of truth)
+  const apiBattleStatus = useMemo(() => {
+    if (!scheduledBattle) return null;
+    if (scheduledBattle.status === "battling") return "live";
+    if (scheduledBattle.status === "staking") return "pending";
+    if (scheduledBattle.status === "completed") return "completed";
+    return "pending";
+  }, [scheduledBattle]);
+
   // Convert scheduled battle to Battle format
   const scheduledAsBattle: Battle | undefined = useMemo(() => {
     if (!scheduledBattle) return undefined;
     return {
       id: scheduledBattle.battle_id,
       gameType: scheduledBattle.game_mode.replace("_", " "),
-      status: scheduledBattle.status === "battling" ? "live" : "pending",
+      status: apiBattleStatus === "live" ? "live" : apiBattleStatus === "completed" ? "completed" : "pending",
       agentA: {
         id: scheduledBattle.agent_a_pubkey,
         name: scheduledBattle.agent_a_name,
@@ -373,9 +439,9 @@ export default function BattleStation() {
       winProbB: 50,
       prizePool: (Number(scheduledBattle.total_stake_a) + Number(scheduledBattle.total_stake_b)) / 1e9,
       spectators: scheduledBattle.stake_count_a + scheduledBattle.stake_count_b,
-      startTime: "Starting soon",
+      startTime: scheduledBattle.status === "battling" ? "Live now" : "Starting soon",
     };
-  }, [scheduledBattle]);
+  }, [scheduledBattle, apiBattleStatus]);
 
   const battle: Battle | undefined = scheduledAsBattle || apiBattle || mockBattle;
 
@@ -392,9 +458,15 @@ export default function BattleStation() {
   const [stakingSheetOpen, setStakingSheetOpen] = useState(false);
 
   const isScheduled = !!scheduledBattle;
-  const isLive = battle?.status === "live" || socketState.isLive;
-  const isPending = battle?.status === "pending";
-  const isStaking = isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0;
+  // Use API status as source of truth, socketState for real-time updates during battle
+  const isLive = apiBattleStatus === "live" || socketState.isLive;
+  const isPending = apiBattleStatus === "pending";
+  const isCompleted = apiBattleStatus === "completed" || socketState.winner !== null;
+  // Staking is open only when status is 'staking' and countdown hasn't expired
+  // IMPORTANT: Use API data as source of truth, not local countdown
+  const isStaking = isScheduled && scheduledBattle?.status === "staking" && scheduledBattle?.seconds_until_battle > 0;
+  // Battle has started (staking closed) when status is 'battling' or 'completed'
+  const hasBattleStarted = isScheduled && (scheduledBattle?.status === "battling" || scheduledBattle?.status === "completed");
 
   // Auto-refresh scheduled battle data
   const queryClient = useQueryClient();
@@ -510,16 +582,22 @@ export default function BattleStation() {
                   {isScheduled ? "Scheduled Battle — Stake Now!" : "Live AI Battle"}
                 </p>
               </div>
-              {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0 && (
+              {/* Status Badge - uses API status as source of truth */}
+              {isScheduled && scheduledBattle?.status === "staking" && (
                 <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 border border-primary/30 text-xs font-display font-bold text-primary">
                   <Clock className="w-3 h-3" />
                   STAKING OPEN
                 </span>
               )}
-              {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle <= 0 && (
+              {isScheduled && scheduledBattle?.status === "battling" && (
                 <span className="live-badge font-display text-xs font-bold px-2.5 py-1 rounded-md flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
                   LIVE
+                </span>
+              )}
+              {isScheduled && scheduledBattle?.status === "completed" && (
+                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted border border-border text-xs font-display font-bold text-muted-foreground">
+                  COMPLETED
                 </span>
               )}
             </div>

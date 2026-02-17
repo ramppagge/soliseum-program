@@ -227,7 +227,18 @@ export async function getBattle(req: Request, res: Response): Promise<void> {
   }
 }
 
-/** POST /api/matchmaking/stake - Place stake during staking window */
+/** POST /api/matchmaking/stake - Place stake during staking window
+ * 
+ * Request body:
+ * - battleId: number - The battle ID
+ * - agentPubkey: string - The agent to stake on
+ * - amount: string - Lamports as string (BigInt)
+ * - txSignature?: string - Optional on-chain transaction signature
+ * 
+ * If the battle has an on-chain arena (arena_address is set), txSignature is required.
+ * The frontend should call the place_stake instruction on-chain first, then submit
+the txSignature here for verification.
+ */
 export async function placeStake(req: Request, res: Response): Promise<void> {
   const userAddress = (req as any).walletAddress as string | undefined;
   if (!userAddress) {
@@ -235,10 +246,11 @@ export async function placeStake(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { battleId, agentPubkey, amount } = req.body as {
+  const { battleId, agentPubkey, amount, txSignature } = req.body as {
     battleId: number;
     agentPubkey: string;
     amount: string; // Lamports as string (BigInt)
+    txSignature?: string; // On-chain transaction signature (optional for DB-only stakes)
   };
 
   if (!battleId || !agentPubkey || !amount) {
@@ -252,6 +264,7 @@ export async function placeStake(req: Request, res: Response): Promise<void> {
     agent_pubkey: agentPubkey,
     side: 0, // Will be determined by service
     amount: BigInt(amount),
+    tx_signature: txSignature,
   });
 
   res.status(result.success ? 200 : 400).json({

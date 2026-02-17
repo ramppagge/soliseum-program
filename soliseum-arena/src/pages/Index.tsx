@@ -52,10 +52,13 @@ const Index = () => {
       const winProbA = totalPool > 0 ? Math.round((totalA / totalPool) * 100) : 50;
       const winProbB = 100 - winProbA;
       
+      // Use API status as source of truth
+      const apiStatus = sb.status === "battling" ? "live" : sb.status === "staking" ? "pending" : "completed";
+      
       return {
         id: sb.battle_id,
         gameType: sb.category.replace("_", " "),
-        status: sb.seconds_until_battle > 0 ? "pending" : "live",
+        status: apiStatus,
         agentA: {
           id: sb.agent_a_pubkey,
           name: sb.agent_a_name,
@@ -89,11 +92,11 @@ const Index = () => {
     });
   }, [activeBattlesData]);
 
-  // Separate staking open vs battling
+  // Separate staking open vs battling - use API status as source of truth
   const stakingOpenBattles = useMemo(
     () => scheduledBattles.filter(b => {
       const sb = activeBattlesData?.battles.find(s => s.battle_id === b.id);
-      return sb && sb.seconds_until_battle > 0;
+      return sb && sb.status === "staking";
     }),
     [scheduledBattles, activeBattlesData]
   );
@@ -101,7 +104,7 @@ const Index = () => {
   const battlingBattles = useMemo(
     () => scheduledBattles.filter(b => {
       const sb = activeBattlesData?.battles.find(s => s.battle_id === b.id);
-      return sb && sb.seconds_until_battle <= 0;
+      return sb && sb.status === "battling";
     }),
     [scheduledBattles, activeBattlesData]
   );

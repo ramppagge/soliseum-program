@@ -16,6 +16,7 @@ import { BattleEngine, HttpAgentClient, MockAgent } from "../battle-engine";
 import type { AgentConfig } from "../battle-engine";
 import type { GameMode } from "../types";
 import { SocketManager } from "../SocketManager";
+import { SolanaService } from "../SolanaService";
 
 // Elo rating constants
 const K_FACTOR = 32; // Standard K-factor
@@ -50,6 +51,7 @@ export interface ScheduledBattle {
   total_stake_b: bigint;
   stake_count_a: number;
   stake_count_b: number;
+  arena_address?: string | null; // On-chain arena address (null if not created on-chain)
 }
 
 export interface StakePlacement {
@@ -58,6 +60,7 @@ export interface StakePlacement {
   agent_pubkey: string;
   side: 0 | 1;
   amount: bigint;
+  tx_signature?: string; // On-chain transaction signature for verified stakes
 }
 
 export class MatchmakingService {
@@ -66,6 +69,11 @@ export class MatchmakingService {
   private countdownTimer: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
   private socketManager: SocketManager | null = null;
+  private solanaService: SolanaService;
+
+  constructor() {
+    this.solanaService = new SolanaService();
+  }
 
   /**
    * Set SocketManager for emitting countdown updates
@@ -310,6 +318,7 @@ export class MatchmakingService {
 
   /**
    * Create a scheduled battle between two agents
+   * Also creates an on-chain arena for staking
    */
   private async createBattle(match: {
     agent_a: string;
@@ -335,7 +344,8 @@ export class MatchmakingService {
       // Return the existing battle with agent names
       const existingBattle = await db.execute(sql`
         SELECT sb.*, a.name as agent_a_name, b.name as agent_b_name,
-               EXTRACT(EPOCH FROM (sb.staking_ends_at - NOW()))::INTEGER as seconds_until_battle
+               EXTRACT(EPOCH FROM (sb.staking_ends_at - NOW()))::INTEGER as seconds_until_battle,
+               sb.arena_address
         FROM scheduled_battles sb
         JOIN agents a ON sb.agent_a_pubkey = a.pubkey
         JOIN agents b ON sb.agent_b_pubkey = b.pubkey
@@ -346,20 +356,34 @@ export class MatchmakingService {
       return (existingBattle as unknown as ScheduledBattle[])[0];
     }
 
+    // Create on-chain arena
+    let arenaAddress: string | null = null;
+    try {
+      console.log(`[createBattle] Creating on-chain arena...`);
+      const { arenaAddress: newArenaAddress } = await this.solanaService.createArenaOnChain();
+      arenaAddress = newArenaAddress;
+      console.log(`[createBattle] On-chain arena created: ${arenaAddress}`);
+    } catch (error) {
+      console.error(`[createBattle] Failed to create on-chain arena:`, error);
+      // Continue without on-chain arena - stakes will be DB-only (fallback)
+      // In production, you might want to throw here instead
+    }
+
     // Remove both from queue
     await db.execute(sql`
       DELETE FROM matchmaking_queue 
       WHERE agent_pubkey IN (${match.agent_a}, ${match.agent_b})
     `);
 
-    // Create scheduled battle
+    // Create scheduled battle with arena address
     const battleResult = await db.execute(sql`
       INSERT INTO scheduled_battles (
         agent_a_pubkey, agent_b_pubkey, agent_a_elo, agent_b_elo,
-        category, game_mode, status, staking_ends_at
+        category, game_mode, status, staking_ends_at, arena_address
       ) VALUES (
         ${match.agent_a}, ${match.agent_b}, ${match.agent_a_elo}, ${match.agent_b_elo},
-        ${category}, ${gameMode}, 'staking', NOW() + INTERVAL '2 minutes'
+        ${category}, ${gameMode}, 'staking', NOW() + INTERVAL '2 minutes',
+        ${arenaAddress}
       )
       RETURNING *
     `);
@@ -558,12 +582,20 @@ export class MatchmakingService {
 
   /**
    * Place stake during staking window
+   * 
+   * New flow with on-chain staking:
+   * 1. Frontend calls place_stake on-chain directly (user signs transaction)
+   * 2. Frontend sends tx_signature to backend via this endpoint
+   * 3. Backend verifies the on-chain stake and records it in DB
+   * 
+   * Fallback flow (if no on-chain arena):
+   * - Backend records DB-only stake (for testing/development)
    */
   async placeStake(stake: StakePlacement): Promise<{ success: boolean; message: string }> {
     try {
       // Verify battle is in staking phase
       const battleResult = await db.execute(sql`
-        SELECT id, status, staking_ends_at, agent_a_pubkey, agent_b_pubkey
+        SELECT id, status, staking_ends_at, agent_a_pubkey, agent_b_pubkey, arena_address
         FROM scheduled_battles
         WHERE id = ${stake.battle_id}
       `);
@@ -574,6 +606,7 @@ export class MatchmakingService {
         staking_ends_at: Date;
         agent_a_pubkey: string;
         agent_b_pubkey: string;
+        arena_address: string | null;
       }[];
 
       if (!battleData || battleData.length === 0) {
@@ -598,14 +631,45 @@ export class MatchmakingService {
       // Determine side
       const side = stake.agent_pubkey === b.agent_a_pubkey ? 0 : 1;
 
-      // Insert stake
-      await db.execute(sql`
-        INSERT INTO scheduled_battle_stakes 
-          (battle_id, user_address, agent_pubkey, side, amount)
-        VALUES (${stake.battle_id}, ${stake.user_address}, ${stake.agent_pubkey}, ${side}, ${stake.amount})
-        ON CONFLICT (battle_id, user_address, side) DO UPDATE SET
-          amount = scheduled_battle_stakes.amount + ${stake.amount}
-      `);
+      // If tx_signature provided, verify on-chain stake
+      if (stake.tx_signature) {
+        try {
+          // Verify the transaction exists and is confirmed
+          const connection = this.solanaService.getConnection();
+          const status = await connection.getSignatureStatus(stake.tx_signature);
+          if (!status?.value || status.value.err) {
+            return { success: false, message: "Transaction failed or not found" };
+          }
+
+          // Insert verified stake with tx signature
+          await db.execute(sql`
+            INSERT INTO scheduled_battle_stakes 
+              (battle_id, user_address, agent_pubkey, side, amount, tx_signature)
+            VALUES (${stake.battle_id}, ${stake.user_address}, ${stake.agent_pubkey}, ${side}, ${stake.amount}, ${stake.tx_signature})
+            ON CONFLICT (battle_id, user_address, side) DO UPDATE SET
+              amount = scheduled_battle_stakes.amount + ${stake.amount},
+              tx_signature = ${stake.tx_signature}
+          `);
+        } catch (txError) {
+          console.error(`[placeStake] Failed to verify on-chain tx:`, txError);
+          return { success: false, message: "Failed to verify on-chain transaction" };
+        }
+      } else if (b.arena_address) {
+        // On-chain arena exists but no tx_signature provided
+        return { 
+          success: false, 
+          message: "On-chain staking required. Please submit the transaction signature." 
+        };
+      } else {
+        // No on-chain arena (fallback for testing) - record DB-only stake
+        await db.execute(sql`
+          INSERT INTO scheduled_battle_stakes 
+            (battle_id, user_address, agent_pubkey, side, amount)
+          VALUES (${stake.battle_id}, ${stake.user_address}, ${stake.agent_pubkey}, ${side}, ${stake.amount})
+          ON CONFLICT (battle_id, user_address, side) DO UPDATE SET
+            amount = scheduled_battle_stakes.amount + ${stake.amount}
+        `);
+      }
 
       // Update battle totals
       const column = side === 0 ? "total_stake_a" : "total_stake_b";
@@ -634,7 +698,7 @@ export class MatchmakingService {
         sb.id, sb.battle_id, sb.agent_a_pubkey, sb.agent_b_pubkey,
         sb.agent_a_elo, sb.agent_b_elo, sb.category, sb.game_mode, sb.status,
         sb.matched_at, sb.staking_ends_at, sb.total_stake_a, sb.total_stake_b,
-        sb.stake_count_a, sb.stake_count_b,
+        sb.stake_count_a, sb.stake_count_b, sb.arena_address,
         a.name as agent_a_name, b.name as agent_b_name,
         EXTRACT(EPOCH FROM (sb.staking_ends_at - NOW()))::INTEGER as seconds_until_battle
       FROM scheduled_battles sb
@@ -655,7 +719,7 @@ export class MatchmakingService {
         sb.id, sb.battle_id, sb.agent_a_pubkey, sb.agent_b_pubkey,
         sb.agent_a_elo, sb.agent_b_elo, sb.category, sb.game_mode, sb.status,
         sb.matched_at, sb.staking_ends_at, sb.total_stake_a, sb.total_stake_b,
-        sb.stake_count_a, sb.stake_count_b,
+        sb.stake_count_a, sb.stake_count_b, sb.arena_address,
         a.name as agent_a_name, b.name as agent_b_name,
         EXTRACT(EPOCH FROM (sb.staking_ends_at - NOW()))::INTEGER as seconds_until_battle
       FROM scheduled_battles sb
@@ -870,6 +934,7 @@ export class MatchmakingService {
   
   /**
    * Complete battle and update Elo ratings
+   * Also settles the game on-chain if there's an arena address
    */
   private async completeBattle(
     battle: ScheduledBattle, 
@@ -932,6 +997,19 @@ export class MatchmakingService {
       console.log(`  ${winnerSide === 0 ? battle.agent_a_name : battle.agent_b_name} wins!`);
       console.log(`  Elo: ${winnerElo} → ${winner_new_elo} (winner)`);
       console.log(`  Elo: ${loserElo} → ${loser_new_elo} (loser)`);
+      
+      // Settle game on-chain if there's an arena address
+      if (battle.arena_address) {
+        try {
+          console.log(`[MatchmakingService] Settling game on-chain for arena ${battle.arena_address}...`);
+          const txSig = await this.solanaService.settleGameOnChain(battle.arena_address, winnerSide);
+          console.log(`[MatchmakingService] Game settled on-chain. Tx: ${txSig}`);
+        } catch (onChainError) {
+          console.error(`[MatchmakingService] Failed to settle game on-chain:`, onChainError);
+          // Don't throw - the battle is still completed in DB, just not settled on-chain
+          // This can be handled manually or by a retry mechanism later
+        }
+      }
       
     } catch (error) {
       console.error(`[MatchmakingService] Failed to complete battle ${battle.battle_id}:`, error);

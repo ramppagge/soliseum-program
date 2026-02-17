@@ -15,6 +15,7 @@ import {
   Transaction,
   TransactionInstruction,
   sendAndConfirmTransaction,
+  SystemProgram,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { getInstructionDiscriminator } from "./utils/anchor";
@@ -51,6 +52,15 @@ function encodeSettleGameInstruction(winner: number): Buffer {
 
 function encodeResetArenaInstruction(): Buffer {
   return getInstructionDiscriminator("reset_arena");
+}
+
+function encodeInitializeArenaInstruction(feeBps: number): Buffer {
+  const discriminator = getInstructionDiscriminator("initialize_arena");
+  const data = Buffer.alloc(discriminator.length + 2 + 96); // discriminator + fee_bps (2 bytes) + oracle_pubkeys (3 * 32 bytes)
+  discriminator.copy(data, 0);
+  data.writeUInt16LE(feeBps, 8);
+  // oracle_pubkeys will be filled in the instruction building
+  return data;
 }
 
 function loadOracleKeypair(): Keypair {
@@ -90,6 +100,11 @@ export class SolanaService {
     const url =
       rpcUrl ?? process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
     this.connection = new Connection(url);
+  }
+
+  /** Get the Solana connection for external use */
+  getConnection(): Connection {
+    return this.connection;
   }
 
   private getOracle(): Keypair {
@@ -271,5 +286,111 @@ export class SolanaService {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Create a new arena on-chain.
+   * Returns the arena PDA address.
+   * 
+   * Note: The arena is seeded with the creator's pubkey, so each creator can only have one arena.
+   * For the matchmaking system, the oracle acts as the creator for all arenas.
+   * The arena will be reset after each battle and reused.
+   */
+  async createArenaOnChain(): Promise<{ arenaAddress: string; vaultAddress: string }> {
+    const oracle = this.getOracle();
+
+    // Derive PDA addresses
+    const [arenaPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("arena"), oracle.publicKey.toBuffer()],
+      PROGRAM_ID
+    );
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), oracle.publicKey.toBuffer()],
+      PROGRAM_ID
+    );
+
+    // Check if arena already exists
+    const arenaAccount = await this.connection.getAccountInfo(arenaPda);
+    if (arenaAccount) {
+      console.log("[SolanaService] Arena already exists:", arenaPda.toBase58());
+      return { 
+        arenaAddress: arenaPda.toBase58(), 
+        vaultAddress: vaultPda.toBase58() 
+      };
+    }
+
+    // Build initialize_arena instruction data
+    // discriminator (8) + fee_bps (2) + oracle_pubkeys (3 * 32 = 96)
+    const discriminator = getInstructionDiscriminator("initialize_arena");
+    const FEE_BPS = 250; // 2.5% platform fee
+    
+    // Create 3 oracle pubkeys (all set to the oracle's pubkey for simplicity)
+    // In production, you might want different oracles for multisig
+    const oraclePubkeys = [oracle.publicKey, oracle.publicKey, oracle.publicKey];
+    
+    const data = Buffer.alloc(8 + 2 + 96);
+    discriminator.copy(data, 0);
+    data.writeUInt16LE(FEE_BPS, 8);
+    let offset = 10;
+    for (const pk of oraclePubkeys) {
+      pk.toBuffer().copy(data, offset);
+      offset += 32;
+    }
+
+    const keys = [
+      { pubkey: arenaPda, isSigner: false, isWritable: true },
+      { pubkey: vaultPda, isSigner: false, isWritable: true },
+      { pubkey: oracle.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+
+    const ix = new TransactionInstruction({
+      keys,
+      programId: PROGRAM_ID,
+      data,
+    });
+
+    const sig = await this.sendTransactionWithRetry(ix, "initialize_arena");
+    console.log("[SolanaService] Arena created:", arenaPda.toBase58(), "Tx:", sig);
+
+    return { 
+      arenaAddress: arenaPda.toBase58(), 
+      vaultAddress: vaultPda.toBase58() 
+    };
+  }
+
+  /**
+   * Get arena account details from chain
+   */
+  async getArenaDetails(arenaAddress: string): Promise<{
+    creator: string;
+    totalPool: number;
+    agentAPool: number;
+    agentBPool: number;
+    status: number;
+    feeBps: number;
+  } | null> {
+    const info = await this.connection.getAccountInfo(new PublicKey(arenaAddress));
+    if (!info?.data || info.data.length < 100) {
+      return null;
+    }
+
+    // Parse arena account data
+    // Arena layout: discriminator(8) + creator(32) + oracles(96) + threshold(1) + total_pool(8) + agent_a_pool(8) + agent_b_pool(8) + status(1) + winner(2) + fee_bps(2) + nonce(8)
+    const creator = new PublicKey(info.data.slice(8, 40)).toBase58();
+    const totalPool = info.data.readBigUInt64LE(137);
+    const agentAPool = info.data.readBigUInt64LE(145);
+    const agentBPool = info.data.readBigUInt64LE(153);
+    const status = info.data[161];
+    const feeBps = info.data.readUInt16LE(164);
+
+    return {
+      creator,
+      totalPool: Number(totalPool),
+      agentAPool: Number(agentAPool),
+      agentBPool: Number(agentBPool),
+      status,
+      feeBps,
+    };
   }
 }
