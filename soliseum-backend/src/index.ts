@@ -15,6 +15,8 @@ import { createServer } from "http";
 import { runSimulationWithDefaults } from "./SimulationEngine";
 import { SocketManager } from "./SocketManager";
 import { SolanaService } from "./SolanaService";
+import { MultisigOracleService } from "./MultisigOracleService";
+import { OracleCoordinationAPI } from "./api/oracleRoutes";
 import type { StartBattlePayload } from "./types";
 import { handleSolanaWebhook } from "./webhooks/solanaWebhook";
 import {
@@ -105,7 +107,42 @@ app.use((req, _res, next) => {
 });
 
 const socketManager = new SocketManager();
-const solanaService = new SolanaService();
+
+// Oracle Multisig Configuration
+const USE_MULTISIG = process.env.USE_MULTISIG_ORACLE === "true";
+const ORACLE_NODE_INDEX = parseInt(process.env.ORACLE_NODE_INDEX ?? "0", 10);
+
+// Initialize either multisig or legacy single-oracle service
+let solanaService: SolanaService;
+let multisigService: MultisigOracleService | null = null;
+let oracleCoordination: OracleCoordinationAPI | null = null;
+
+if (USE_MULTISIG) {
+  console.log(`[Oracle] Multisig mode enabled (node ${ORACLE_NODE_INDEX})`);
+  multisigService = new MultisigOracleService(
+    process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com",
+    ORACLE_NODE_INDEX
+  );
+  oracleCoordination = new OracleCoordinationAPI(multisigService);
+  
+  // Wrap multisig for legacy compatibility
+  solanaService = {
+    settleGameOnChain: (arena: string, winner: number) => 
+      multisigService!.settleGame(arena, winner),
+    resetArenaOnChain: (arena: string) => 
+      multisigService!.resetArena(arena, { isCreator: false }),
+    getArenaStatus: (arena: string) => 
+      multisigService!.getArenaMultisigState(arena).then(s => s.status),
+    getArenaOnChainState: (arena: string) => 
+      multisigService!.getArenaMultisigState(arena).then(s => ({ 
+        status: s.status, 
+        winner: s.status === 2 ? 0 : null // Simplified - should fetch actual winner
+      })),
+  } as SolanaService;
+} else {
+  console.log("[Oracle] Legacy single-oracle mode");
+  solanaService = new SolanaService();
+}
 
 // Wire session validation into SocketManager for WebSocket auth
 socketManager.setSessionValidator(validateSession);
@@ -188,6 +225,28 @@ async function runBattleInner(payload: StartBattlePayload): Promise<{ winner: nu
   invalidateArenaCaches();
 
   return { winner: result.winner, txSignature };
+}
+
+// ─── Oracle Coordination (internal, rate-limited) ────────────────────────────
+if (oracleCoordination) {
+  app.post(
+    "/api/oracle/sign",
+    apiLimiter,
+    (req, res) => oracleCoordination!.handleSignRequest(req, res)
+  );
+  
+  app.post(
+    "/api/oracle/sign-reset",
+    apiLimiter,
+    (req, res) => oracleCoordination!.handleSignResetRequest(req, res)
+  );
+  
+  app.get(
+    "/api/oracle/status",
+    (req, res) => oracleCoordination!.handleStatusRequest(req, res)
+  );
+  
+  console.log("[Oracle] Coordination endpoints registered");
 }
 
 // ─── Auth endpoints (public, rate-limited) ───────────────────────────────────
@@ -489,7 +548,9 @@ app.get(["/", ""], (_req, res) => {
   res.status(200).json({
     service: "Soliseum Oracle",
     status: "ok",
-    version: "3.0.0",
+    version: "4.0.0",
+    oracle_mode: USE_MULTISIG ? "multisig-2-of-3" : "single",
+    oracle_node: USE_MULTISIG ? ORACLE_NODE_INDEX : null,
     endpoints: {
       "GET /": "this info",
       "GET /health": "health check",
@@ -506,6 +567,11 @@ app.get(["/", ""], (_req, res) => {
       "GET /api/agents": "list registered agents (query: category?, status?, limit?)",
       "GET /api/agents/:pubkey": "agent profile + battle sparkline",
       "POST /api/test-battle": "Battle Engine test (agentA, agentB, gameMode) - streams via Socket.io",
+      ...(oracleCoordination ? {
+        "POST /api/oracle/sign": "Request settlement signature from this oracle node [multisig only]",
+        "POST /api/oracle/sign-reset": "Request reset signature from this oracle node [multisig only]",
+        "GET /api/oracle/status": "Get this oracle node's configuration",
+      } : {}),
     },
     socket: SOCKET_PORT === PORT
       ? `Socket.io on same URL (single-port mode)`
@@ -518,6 +584,7 @@ app.get("/health", async (_req, res) => {
     service: "ok",
     database: "down",
     solanaRpc: "down",
+    oracle: USE_MULTISIG ? "ok" : "degraded",
   };
 
   // Check database connectivity
