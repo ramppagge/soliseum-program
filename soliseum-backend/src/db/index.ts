@@ -24,10 +24,10 @@ const client = postgres(connectionString, {
   // Session pooler (port 5432) is limited to ~10
   max: isTransactionPooler ? 10 : 3,
   
-  // Aggressive connection cleanup
-  idle_timeout: 10,          // Close idle connections after 10s
-  connect_timeout: 5,        // Fail fast if can't connect
-  max_lifetime: 60 * 2,      // Recycle connections after 2 minutes
+  // Connection settings for stability
+  idle_timeout: 20,          // Close idle connections after 20s
+  connect_timeout: 10,       // 10s connection timeout (was 5s)
+  max_lifetime: 60 * 5,      // Recycle connections after 5 minutes
   
   // Required for Supabase pooler
   prepare: false,            // Disable prepared statements
