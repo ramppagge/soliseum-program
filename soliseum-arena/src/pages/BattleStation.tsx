@@ -384,6 +384,7 @@ export default function BattleStation() {
   const socketState = useBattleSocket(battleId ?? undefined, token);
 
   const [mockLogs, setMockLogs] = useState<LogEntry[]>([]);
+  const [countdownLogs, setCountdownLogs] = useState<LogEntry[]>([]);
   const [scoreA, setScoreA] = useState(50);
   const [scoreB, setScoreB] = useState(50);
   const [battleEnd, setBattleEnd] = useState<"A" | "B" | null>(null);
@@ -393,6 +394,7 @@ export default function BattleStation() {
   const isScheduled = !!scheduledBattle;
   const isLive = battle?.status === "live" || socketState.isLive;
   const isPending = battle?.status === "pending";
+  const isStaking = isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0;
 
   // Auto-refresh scheduled battle data
   const queryClient = useQueryClient();
@@ -412,7 +414,48 @@ export default function BattleStation() {
     }
   }, [battle, battleId, navigate]);
 
-  // Generate mock logs for visual effect
+  // Generate countdown logs for staking phase
+  useEffect(() => {
+    if (!isStaking || !battle) return;
+    
+    let logId = 0;
+    const initialLogs: LogEntry[] = [
+      { id: ++logId, time: formatTime(new Date()), agent: "SYSTEM", message: "Staking window opened. Place your bets!" },
+      { id: ++logId, time: formatTime(new Date()), agent: "SYSTEM", message: `Match: ${battle.agentA.name} vs ${battle.agentB.name}` },
+      { id: ++logId, time: formatTime(new Date()), agent: "SYSTEM", message: `Category: ${battle.gameType}` },
+    ];
+    setCountdownLogs(initialLogs);
+
+    const interval = setInterval(() => {
+      const remaining = scheduledBattle?.seconds_until_battle ?? 0;
+      const time = formatTime(new Date());
+      
+      if (remaining > 0 && remaining % 10 === 0) {
+        // Log every 10 seconds
+        setCountdownLogs((prev) => {
+          const next = [...prev, { 
+            id: ++logId, 
+            time, 
+            agent: "SYSTEM", 
+            message: `Battle starts in ${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}` 
+          }];
+          return next.slice(-50);
+        });
+      }
+      
+      if (remaining === 0) {
+        setCountdownLogs((prev) => {
+          const next = [...prev, { id: ++logId, time, agent: "SYSTEM", message: "Staking closed. Battle starting..." }];
+          return next.slice(-50);
+        });
+        clearInterval(interval);
+      }
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [isStaking, battle, scheduledBattle?.seconds_until_battle]);
+
+  // Generate mock logs for visual effect (only for non-scheduled battles)
   useEffect(() => {
     if (!battle || battleEnd || isScheduled) return;
     let logId = 0;
@@ -434,7 +477,16 @@ export default function BattleStation() {
 
   const agentA = battle.agentA;
   const agentB = battle.agentB;
-  const logs = isLive && socketState.logs.length > 0 ? socketState.logs : mockLogs;
+  
+  // Determine which logs to show
+  let logs: LogEntry[];
+  if (isLive && socketState.logs.length > 0) {
+    logs = socketState.logs;
+  } else if (isStaking && countdownLogs.length > 0) {
+    logs = countdownLogs;
+  } else {
+    logs = mockLogs;
+  }
 
   return (
     <div className="relative min-h-screen grid-bg overflow-hidden">

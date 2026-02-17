@@ -45,6 +45,8 @@ import {
   getActiveBattles,
   getBattle,
   placeStake,
+  triggerBattleDebug,
+  resetAllBattles,
 } from "./api/matchmakingRoutes";
 import {
   validate,
@@ -164,6 +166,9 @@ socketManager.setSessionValidator(validateSession);
 // Socket.io: same server as Express when SOCKET_PORT === PORT (deployment); else separate server (local dev)
 const socketHttpServer = SOCKET_PORT === PORT ? httpServer : createServer();
 socketManager.attach(socketHttpServer);
+
+// Pass SocketManager to MatchmakingService for countdown emissions
+matchmakingService.setSocketManager(socketManager);
 
 // ─── Concurrency limiter for on-chain settlements ────────────────────────────
 const MAX_CONCURRENT_BATTLES = parseInt(process.env.MAX_CONCURRENT_BATTLES ?? "3", 10);
@@ -452,6 +457,21 @@ app.post(
   apiLimiter,
   requireAuth,
   (req, res) => placeStake(req, res)
+);
+
+// Debug endpoint to manually trigger battle
+app.post(
+  "/api/matchmaking/trigger-battle/:id",
+  apiLimiter,
+  requireAuth,
+  (req, res) => triggerBattleDebug(req, res)
+);
+
+// Debug endpoint to reset all battles
+app.post(
+  "/api/matchmaking/reset-all",
+  apiLimiter,
+  (req, res) => resetAllBattles(req, res)
 );
 
 app.get(

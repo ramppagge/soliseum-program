@@ -23,6 +23,7 @@ export interface BattleSocketState {
   agentA?: { id: string; name: string };
   agentB?: { id: string; name: string };
   gameMode?: string;
+  countdownSeconds?: number;
 }
 
 let logIdCounter = 0;
@@ -33,6 +34,7 @@ export function useBattleSocket(battleId: string | undefined, authToken?: string
     logs: [],
     winner: null,
     isLive: false,
+    countdownSeconds: undefined,
   });
 
   const connect = useCallback(() => {
@@ -89,6 +91,14 @@ export function useBattleSocket(battleId: string | undefined, authToken?: string
         ...s,
         winner: data.winner as 0 | 1,
         isLive: false,
+      }));
+    });
+
+    socket.on("battle:countdown", (data: { battleId: string; secondsRemaining: number }) => {
+      if (data.battleId !== battleId) return;
+      setState((s) => ({
+        ...s,
+        countdownSeconds: data.secondsRemaining,
       }));
     });
 

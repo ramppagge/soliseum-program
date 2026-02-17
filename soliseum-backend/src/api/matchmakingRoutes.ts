@@ -115,7 +115,7 @@ export async function getQueueStatus(req: Request, res: Response): Promise<void>
     const { sql } = await import("drizzle-orm");
 
     // Get agent status
-    const [agent] = await db.execute(sql`
+    const agentResult = await db.execute(sql`
       SELECT 
         a.pubkey, a.name, a.category, a.elo_rating, a.matchmaking_status,
         EXISTS(SELECT 1 FROM matchmaking_queue q WHERE q.agent_pubkey = a.pubkey) as in_queue,
@@ -125,7 +125,7 @@ export async function getQueueStatus(req: Request, res: Response): Promise<void>
       WHERE a.pubkey = ${pubkey}
     `);
 
-    const agentData = agent as unknown as {
+    const agentData = agentResult as unknown as {
       pubkey: string;
       name: string;
       category: string;
@@ -143,14 +143,14 @@ export async function getQueueStatus(req: Request, res: Response): Promise<void>
     const a = agentData[0];
 
     // Check for active battle
-    const [battle] = await db.execute(sql`
+    const battleResult = await db.execute(sql`
       SELECT battle_id, status, seconds_until_battle
       FROM active_battles_view
       WHERE agent_a_pubkey = ${pubkey} OR agent_b_pubkey = ${pubkey}
       LIMIT 1
     `);
 
-    const battleData = battle as unknown as {
+    const battleData = battleResult as unknown as {
       battle_id: string;
       status: string;
       seconds_until_battle: number;
@@ -254,5 +254,75 @@ export async function placeStake(req: Request, res: Response): Promise<void> {
     amount: BigInt(amount),
   });
 
-  res.status(result.success ? 200 : 400).json(result);
+  res.status(result.success ? 200 : 400).json({
+    ok: result.success,
+    message: result.message,
+  });
+}
+
+/** POST /api/matchmaking/trigger-battle/:id - Debug: manually trigger a battle */
+export async function triggerBattleDebug(req: Request, res: Response): Promise<void> {
+  const { id } = req.params;
+  
+  try {
+    const battle = await matchmakingService.getBattle(id);
+    if (!battle) {
+      res.status(404).json({ ok: false, error: "Battle not found" });
+      return;
+    }
+    
+    console.log(`[Debug] Manually triggering battle ${id}`);
+    
+    // Update status to battling
+    const { db } = await import("../db");
+    const { sql } = await import("drizzle-orm");
+    
+    await db.execute(sql`
+      UPDATE scheduled_battles
+      SET status = 'battling', battle_started_at = NOW()
+      WHERE id = ${battle.id}
+    `);
+    
+    // Trigger battle
+    await matchmakingService.triggerBattle(battle);
+    
+    res.json({ ok: true, message: "Battle triggered" });
+  } catch (error) {
+    console.error("[triggerBattleDebug] Error:", error);
+    res.status(500).json({ ok: false, error: "Failed to trigger battle" });
+  }
+}
+
+/** POST /api/matchmaking/reset-all - Debug: reset all battles (admin only) */
+export async function resetAllBattles(req: Request, res: Response): Promise<void> {
+  try {
+    const { db } = await import("../db");
+    const { sql } = await import("drizzle-orm");
+    
+    console.log("[Debug] Resetting all battles...");
+    
+    // Delete all stakes
+    await db.execute(sql`DELETE FROM scheduled_battle_stakes`);
+    console.log("  - Deleted all stakes");
+    
+    // Delete all battles
+    await db.execute(sql`DELETE FROM scheduled_battles`);
+    console.log("  - Deleted all battles");
+    
+    // Clear queue
+    await db.execute(sql`DELETE FROM matchmaking_queue`);
+    console.log("  - Cleared matchmaking queue");
+    
+    // Reset agents to idle
+    await db.execute(sql`UPDATE agents SET matchmaking_status = 'idle'`);
+    console.log("  - Reset all agents to idle");
+    
+    res.json({ 
+      ok: true, 
+      message: "All battles reset successfully" 
+    });
+  } catch (error) {
+    console.error("[resetAllBattles] Error:", error);
+    res.status(500).json({ ok: false, error: "Failed to reset battles" });
+  }
 }

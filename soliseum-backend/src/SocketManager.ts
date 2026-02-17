@@ -137,6 +137,13 @@ export class SocketManager {
    * Emit Battle Engine log (type, side) and dominance updates.
    * Used by /api/test-battle for real-time tug-of-war visualization.
    */
+  emitBattleStart(
+    battleId: string,
+    data: { agentA: { id: string; name: string }; agentB: { id: string; name: string }; gameMode: string }
+  ): void {
+    this.io?.to(`battle:${battleId}`).emit("battle:start", { battleId, ...data });
+  }
+
   emitBattleEngineLog(battleId: string, log: BattleLogEntry): void {
     this.io?.to(`battle:${battleId}`).emit("battle:log", { battleId, log });
   }
@@ -154,6 +161,21 @@ export class SocketManager {
     // Cleanup room after battle ends
     const room = `battle:${battleId}`;
     this.io?.in(room).socketsLeave(room);
+  }
+
+  /**
+   * Emit countdown tick for battles in staking phase
+   */
+  emitBattleCountdown(battleId: string, secondsRemaining: number): void {
+    this.io?.to(`battle:${battleId}`).emit("battle:countdown", { battleId, secondsRemaining });
+  }
+
+  /**
+   * Subscribe to countdown updates for a battle
+   */
+  subscribeToCountdown(socket: Socket, battleId: string): void {
+    const room = `countdown:${battleId}`;
+    socket.join(room);
   }
 
   private delay(ms: number): Promise<void> {
