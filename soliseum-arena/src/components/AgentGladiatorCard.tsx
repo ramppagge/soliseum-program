@@ -1,19 +1,34 @@
 import { motion } from "framer-motion";
-import { BarChart3, Swords, FileText, Settings } from "lucide-react";
+import { BarChart3, Swords, FileText, Settings, Loader2, Clock, Flame } from "lucide-react";
 import { ResponsiveContainer, Area, AreaChart, YAxis, Tooltip } from "recharts";
 import type { Agent, AgentStatus } from "@/data/mockData";
+import { useMatchmakingStatus } from "@/hooks/useApi";
 
-function getStatusClass(status: AgentStatus) {
+function getStatusClass(status: AgentStatus | string) {
   switch (status) {
     case "ACTIVE":
+    case "idle":
       return "status-active border border-[hsla(142,76%,46%,0.4)] bg-[hsla(142,76%,46%,0.08)]";
     case "IN-BATTLE":
+    case "battling":
       return "status-in-battle border border-[hsl(var(--neon-orange))]/40 bg-[hsla(var(--neon-orange)/0.1)]";
+    case "queued":
+      return "status-queued border border-primary/40 bg-primary/10 text-primary";
+    case "matched":
+      return "status-matched border border-secondary/40 bg-secondary/10 text-secondary";
     case "IDLE":
-      return "status-idle border border-border bg-muted/50";
     default:
       return "status-idle border border-border bg-muted/50";
   }
+}
+
+function getStatusDisplay(status: string, battleStatus?: string) {
+  if (battleStatus === "staking") return "MATCH FOUND";
+  if (battleStatus === "battling") return "IN BATTLE";
+  if (status === "queued") return "IN QUEUE";
+  if (status === "matched") return "MATCHED";
+  if (status === "battling") return "IN BATTLE";
+  return status.replace("-", " ").toUpperCase();
 }
 
 function PerformanceSparkline({ data }: { data: number[] }) {
@@ -64,6 +79,7 @@ interface AgentGladiatorCardProps {
   onEnterArena: (agent: Agent) => void;
   onEditConfig: (agent: Agent) => void;
   onSelect?: (agent: Agent) => void;
+  isEntering?: boolean;
 }
 
 export function AgentGladiatorCard({
@@ -73,12 +89,26 @@ export function AgentGladiatorCard({
   onEnterArena,
   onEditConfig,
   onSelect,
+  isEntering = false,
 }: AgentGladiatorCardProps) {
-  const status: AgentStatus = agent.status ?? "IDLE";
+  const { data: mmStatus } = useMatchmakingStatus(agent.id);
+  
+  const status = mmStatus?.battle?.status === "staking" 
+    ? "matched" 
+    : mmStatus?.battle?.status === "battling"
+    ? "battling"
+    : mmStatus?.agent?.status === "queued"
+    ? "queued"
+    : agent.status ?? "IDLE";
+    
+  const isInMatchmaking = status === "queued" || status === "matched" || status === "battling";
+  
   const sparklineData =
     agent.last7DaysPerformance?.length === 7
       ? agent.last7DaysPerformance
       : agent.recentPerformance.slice(-7).map((v) => (v === 1 ? 0.85 : 0.35));
+
+  const displayStatus = getStatusDisplay(status, mmStatus?.battle?.status);
 
   return (
     <motion.article
@@ -102,7 +132,10 @@ export function AgentGladiatorCard({
                 status
               )}`}
             >
-              ● {status.replace("-", " ")}
+              {status === "queued" && <Loader2 className="w-3 h-3 inline animate-spin mr-1" />}
+              {status === "matched" && <Clock className="w-3 h-3 inline mr-1" />}
+              {status === "battling" && <Flame className="w-3 h-3 inline mr-1" />}
+              {displayStatus}
             </span>
           </div>
         </div>
@@ -132,14 +165,32 @@ export function AgentGladiatorCard({
         </button>
         <button
           type="button"
+          disabled={isEntering || isInMatchmaking}
           onClick={(e) => {
             e.stopPropagation();
             onEnterArena(agent);
           }}
-          className="min-h-[44px] sm:min-h-0 flex-1 min-w-0 flex items-center justify-center gap-1 sm:gap-1.5 py-2.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-display font-medium bg-primary/15 text-primary border border-primary/40 hover:glow-purple transition-all"
+          className={`min-h-[44px] sm:min-h-0 flex-1 min-w-0 flex items-center justify-center gap-1 sm:gap-1.5 py-2.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-display font-medium transition-all
+            ${isInMatchmaking 
+              ? "bg-muted/30 text-muted-foreground border border-border cursor-not-allowed" 
+              : "bg-primary/15 text-primary border border-primary/40 hover:glow-purple"
+            }`}
         >
-          <Swords className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-          <span className="truncate sm:inline hidden">Enter Arena</span>
+          {isEntering ? (
+            <Loader2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 animate-spin" />
+          ) : (
+            <Swords className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+          )}
+          <span className="truncate sm:inline hidden">
+            {isInMatchmaking 
+              ? status === "queued" 
+                ? "In Queue..." 
+                : status === "matched"
+                ? "Match Found"
+                : "Battling"
+              : "Enter Arena"
+            }
+          </span>
         </button>
         <button
           type="button"

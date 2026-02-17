@@ -21,6 +21,51 @@ export interface ArenaActive {
   startTime: string | null;
 }
 
+// ─── Enhanced Leaderboard Types (Optimized API) ──────────────────────────────
+
+export interface LeaderboardEntry {
+  id: number;
+  pubkey: string;
+  name: string;
+  category: "Trading" | "Chess" | "Coding";
+  description: string | null;
+  total_wins: number;
+  total_battles: number;
+  win_rate: number;
+  credibility_score: number;
+  agent_status: string;
+  rank: number;
+  recent_battles: Array<{
+    won: boolean;
+    played_at: string;
+    arena_id: number;
+  }>;
+  win_streak: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeaderboardResponse {
+  ok: boolean;
+  entries: LeaderboardEntry[];
+  total: number;
+  hasMore: boolean;
+  nextOffset?: number;
+  category: string;
+}
+
+export interface CategoryStats {
+  category: string;
+  total_agents: number;
+  avg_credibility: number;
+  top_agent: {
+    name: string;
+    pubkey: string;
+    credibility_score: number;
+  };
+}
+
+// Legacy type for backward compatibility
 export interface LeaderboardAgent {
   pubkey: string;
   name: string;
@@ -132,9 +177,42 @@ export async function fetchGlobalStats(): Promise<GlobalStats> {
   return fetchApi<GlobalStats>("/api/stats/global");
 }
 
-/** GET /api/leaderboard */
-export async function fetchLeaderboard(limit = 50): Promise<LeaderboardAgent[]> {
-  return fetchApi<LeaderboardAgent[]>(`/api/leaderboard?limit=${limit}`);
+/** GET /api/leaderboard - Optimized with materialized views */
+export async function fetchLeaderboard(
+  options: {
+    category?: "Trading" | "Chess" | "Coding";
+    limit?: number;
+    offset?: number;
+    minBattles?: number;
+    search?: string;
+  } = {}
+): Promise<LeaderboardResponse> {
+  const params = new URLSearchParams();
+  if (options.category) params.append("category", options.category);
+  if (options.limit) params.append("limit", String(options.limit));
+  if (options.offset) params.append("offset", String(options.offset));
+  if (options.minBattles) params.append("minBattles", String(options.minBattles));
+  if (options.search) params.append("search", options.search);
+  
+  return fetchApi<LeaderboardResponse>(`/api/leaderboard?${params}`);
+}
+
+/** GET /api/leaderboard/hot - Agents with 70%+ win rate */
+export async function fetchHotAgents(limit = 10): Promise<LeaderboardEntry[]> {
+  const res = await fetchApi<{ ok: boolean; agents: LeaderboardEntry[] }>(`/api/leaderboard/hot?limit=${limit}`);
+  return res.agents;
+}
+
+/** GET /api/leaderboard/rising - Agents on win streaks */
+export async function fetchRisingStars(limit = 10): Promise<LeaderboardEntry[]> {
+  const res = await fetchApi<{ ok: boolean; agents: LeaderboardEntry[] }>(`/api/leaderboard/rising?limit=${limit}`);
+  return res.agents;
+}
+
+/** GET /api/leaderboard/stats - Category statistics */
+export async function fetchCategoryStats(): Promise<CategoryStats[]> {
+  const res = await fetchApi<{ ok: boolean; stats: CategoryStats[] }>("/api/leaderboard/stats");
+  return res.stats;
 }
 
 /** GET /api/user/:address/history */
@@ -183,6 +261,129 @@ export function leaderboardAgentToAgent(la: LeaderboardAgent): import("@/data/mo
     recentPerformance: [],
     totalEarnings: 0,
   };
+}
+
+// ─── Matchmaking API ──────────────────────────────────────────────────────────
+
+export interface MatchmakingStatus {
+  ok: boolean;
+  agent?: {
+    pubkey: string;
+    name: string;
+    category: string;
+    elo_rating: number;
+    status: string;
+  };
+  queue?: {
+    time_remaining: number;
+  };
+  battle?: {
+    battle_id: string;
+    status: string;
+    seconds_until_battle: number;
+  };
+}
+
+export interface ActiveBattle {
+  id: number;
+  battle_id: string;
+  agent_a_pubkey: string;
+  agent_b_pubkey: string;
+  agent_a_name: string;
+  agent_b_name: string;
+  agent_a_elo: number;
+  agent_b_elo: number;
+  category: string;
+  status: string;
+  seconds_until_battle: number;
+  total_stake_a: string;
+  total_stake_b: string;
+  stake_count_a: number;
+  stake_count_b: number;
+}
+
+export interface ScheduledBattle {
+  battle_id: string;
+  agent_a_pubkey: string;
+  agent_b_pubkey: string;
+  agent_a_name: string;
+  agent_b_name: string;
+  game_mode: string;
+  status: string;
+  seconds_until_battle: number;
+}
+
+// User's registered agents
+export interface UserAgent {
+  pubkey: string;
+  name: string;
+  description: string | null;
+  category: "Trading" | "Chess" | "Coding";
+  apiUrl: string | null;
+  metadataUrl: string | null;
+  agentStatus: "active" | "inactive";
+  totalWins: number;
+  totalBattles: number;
+  credibilityScore: number;
+  createdAt: string;
+}
+
+/** GET /api/agents?owner=:address - Fetch user's registered agents */
+export async function fetchUserAgents(ownerAddress: string): Promise<UserAgent[]> {
+  const res = await fetchApi<{ agents: UserAgent[] }>(`/api/agents?owner=${encodeURIComponent(ownerAddress)}`);
+  return res.agents || [];
+}
+
+/** POST /api/agents/register - Register a new agent */
+export async function registerAgent(
+  payload: {
+    pubkey: string;
+    name: string;
+    description: string;
+    category: "Trading" | "Chess" | "Coding";
+    apiUrl?: string;
+    metadataUrl?: string;
+  },
+  token: string
+): Promise<{ ok: boolean; agent: UserAgent }> {
+  return fetchApi("/api/agents/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    token,
+  });
+}
+
+/** POST /api/matchmaking/enter - Enter matchmaking queue */
+export async function enterMatchmaking(
+  agentPubkey: string,
+  category: "Trading" | "Chess" | "Coding",
+  token: string
+): Promise<{ success: boolean; message: string; battle?: ScheduledBattle }> {
+  return fetchApi("/api/matchmaking/enter", {
+    method: "POST",
+    body: JSON.stringify({ agentPubkey, category }),
+    token,
+  });
+}
+
+/** POST /api/matchmaking/leave - Leave matchmaking queue */
+export async function leaveMatchmaking(agentPubkey: string, token: string): Promise<boolean> {
+  const res = await fetchApi<{ ok: boolean }>("/api/matchmaking/leave", {
+    method: "POST",
+    body: JSON.stringify({ agentPubkey }),
+    token,
+  });
+  return res.ok;
+}
+
+/** GET /api/matchmaking/status/:pubkey - Get agent matchmaking status */
+export async function fetchMatchmakingStatus(pubkey: string): Promise<MatchmakingStatus> {
+  return fetchApi<MatchmakingStatus>(`/api/matchmaking/status/${encodeURIComponent(pubkey)}`);
+}
+
+/** GET /api/matchmaking/battles - List active battles */
+export async function fetchActiveBattles(): Promise<{ ok: boolean; battles: ActiveBattle[] }> {
+  return fetchApi<{ ok: boolean; battles: ActiveBattle[] }>("/api/matchmaking/battles");
 }
 
 /** Map ArenaActive to Battle shape for UI (minimal agent placeholders) */

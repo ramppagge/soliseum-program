@@ -1,41 +1,27 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { battles, type Battle, type Agent } from "@/data/mockData";
-import { useActiveArenas } from "@/hooks/useApi";
+import { battles, type Battle } from "@/data/mockData";
+import { useActiveArenas, useActiveBattles } from "@/hooks/useApi";
 import { arenaToBattle } from "@/lib/api";
 import { useBattleSocket } from "@/hooks/useBattleSocket";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchBattleStart, fetchResetArena, fetchArenaByAddress, fetchSyncArena, type ArenaActive } from "@/lib/api";
+import { fetchBattleStart, fetchResetArena, fetchArenaByAddress, fetchSyncArena, type ArenaActive, type ActiveBattle } from "@/lib/api";
 import { DigitalSmoke } from "@/components/DigitalSmoke";
 import { BattleVisualizer } from "@/components/BattleVisualizer";
 import { Input } from "@/components/ui/input";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-  TooltipProvider,
-} from "@/components/ui/tooltip";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { Zap, TrendingUp, ArrowLeft, Swords, HelpCircle, RotateCcw } from "lucide-react";
+import { Zap, TrendingUp, ArrowLeft, Swords, HelpCircle, RotateCcw, Clock, Flame, Users, Timer, Wallet } from "lucide-react";
 import { toast } from "sonner";
-import {
-  buildPlaceStakeInstruction,
-  solToLamports,
-} from "@/lib/solanaProgram";
+import { buildPlaceStakeInstruction, solToLamports } from "@/lib/solanaProgram";
+import { API_URL } from "@/config/soliseum";
 
-// Mock terminal log entry
 type LogEntry = { id: number; time: string; agent: string; message: string; isAdvantage?: boolean };
 
 const MOCK_LOG_TEMPLATES: { message: string; isAdvantage?: boolean }[] = [
@@ -44,114 +30,391 @@ const MOCK_LOG_TEMPLATES: { message: string; isAdvantage?: boolean }[] = [
   { message: "Momentum signal detected. Long entry." },
   { message: "Counter-trade executed. Position neutralized.", isAdvantage: true },
   { message: "Risk-parity rebalance in progress..." },
-  { message: "Alpha-beta pruning active. Confidence +12%." },
-  { message: "Scalp target hit. +0.34% gain.", isAdvantage: true },
-  { message: "Volatility regime shift detected." },
-  { message: "Mean-reversion trigger. Exit long." },
-  { message: "Hedge strategy deployed. Target: 146.80." },
-  { message: "Logic score updated. Lead +2.", isAdvantage: true },
-  { message: "Adaptability module engaged." },
-  { message: "Consistency check passed." },
-  { message: "Speed advantage applied. Response -40ms.", isAdvantage: true },
-  { message: "Next candle analysis queued." },
-  { message: "Opening book fusion loaded." },
-  { message: "Target 147.20. Stop 144.90." },
-  { message: "Counter-strategy deployed. Neutralizing.", isAdvantage: true },
+  { message: "Alpha-beta pruning active. Confidence +12%.", isAdvantage: true },
 ];
 
 function formatTime(now: Date) {
   return now.toTimeString().slice(0, 8);
 }
 
-// Supporters list mock
-const MOCK_SUPPORTERS = [
-  { username: "alpha.sol", agent: "NEXUS-7", amount: 2 },
-  { username: "cipher.sol", agent: "VORTEX", amount: 5 },
-  { username: "nexus_fan.sol", agent: "NEXUS-7", amount: 0.5 },
-  { username: "vortex_max.sol", agent: "VORTEX", amount: 1 },
-  { username: "trader_joe.sol", agent: "NEXUS-7", amount: 10 },
-  { username: "sol_whale.sol", agent: "VORTEX", amount: 25 },
-];
+function formatCountdown(seconds: number) {
+  const mins = Math.floor(Math.max(0, seconds) / 60);
+  const secs = Math.max(0, seconds) % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
 
 function isArenaAddress(id: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(id);
+}
+
+function isScheduledBattleId(id: string): boolean {
+  return id.startsWith("sb_") || id.length > 44;
+}
+
+// Countdown Timer Component
+function CountdownTimer({ seconds, label = "Battle starts in" }: { seconds: number; label?: string }) {
+  const [timeLeft, setTimeLeft] = useState(seconds);
+
+  useEffect(() => {
+    setTimeLeft(seconds);
+    const interval = setInterval(() => {
+      setTimeLeft((t) => Math.max(0, t - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [seconds]);
+
+  return (
+    <div className="flex items-center gap-2 text-secondary">
+      <Timer className="w-4 h-4 animate-pulse" />
+      <span className="font-display text-sm font-bold">
+        {label}: {formatCountdown(timeLeft)}
+      </span>
+    </div>
+  );
+}
+
+// Staking Panel Component (for both scheduled and live battles)
+function StakingPanel({
+  battle,
+  scheduledBattle,
+  onStakePlaced,
+}: {
+  battle: Battle;
+  scheduledBattle?: ActiveBattle;
+  onStakePlaced?: () => void;
+}) {
+  const { connected, publicKey, sendTransaction } = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
+  const { connection } = useConnection();
+  const { token } = useAuth();
+  const queryClient = useQueryClient();
+
+  const [solAmount, setSolAmount] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState<"A" | "B">("A");
+  const [stakeLoading, setStakeLoading] = useState(false);
+
+  const isScheduled = !!scheduledBattle;
+  const isStakingOpen = isScheduled 
+    ? scheduledBattle.seconds_until_battle > 0 
+    : true;
+
+  const probA = battle.winProbA ?? 50;
+  const probB = battle.winProbB ?? 50;
+  const sol = parseFloat(solAmount) || 0;
+  const prob = selectedAgent === "A" ? probA : probB;
+  const potentialReturn = prob > 0 ? (sol * 100) / prob : 0;
+
+  const quickBet = useCallback((value: number | "MAX") => {
+    if (value === "MAX") setSolAmount("100");
+    else setSolAmount(String(value));
+  }, []);
+
+  const handlePlaceStake = useCallback(async () => {
+    if (!publicKey) {
+      setWalletModalVisible(true);
+      return;
+    }
+
+    const amount = parseFloat(solAmount) || 0;
+    if (amount <= 0) {
+      toast.error("Enter a valid stake amount");
+      return;
+    }
+
+    // For scheduled battles, use API stake
+    if (isScheduled && scheduledBattle) {
+      setStakeLoading(true);
+      try {
+        const res = await fetch(`${API_URL}/api/matchmaking/stake`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            battleId: scheduledBattle.id,
+            agentPubkey: selectedAgent === "A" ? scheduledBattle.agent_a_pubkey : scheduledBattle.agent_b_pubkey,
+            amount: solToLamports(amount).toString(),
+          }),
+        });
+
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Stake failed");
+
+        toast.success(`Staked ${amount} SOL on ${selectedAgent === "A" ? battle.agentA.name : battle.agentB.name}!`);
+        setSolAmount("");
+        onStakePlaced?.();
+        queryClient.invalidateQueries({ queryKey: ["matchmaking", "battles"] });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Stake failed");
+      } finally {
+        setStakeLoading(false);
+      }
+      return;
+    }
+
+    // For live battles, use on-chain stake
+    if (!battle.id || !isArenaAddress(battle.id)) {
+      toast.error("Invalid battle for staking");
+      return;
+    }
+
+    setStakeLoading(true);
+    const toastId = toast.loading("Confirming transaction...");
+
+    try {
+      const { Transaction, PublicKey } = await import("@solana/web3.js");
+      const ix = await buildPlaceStakeInstruction(
+        connection,
+        new PublicKey(battle.id),
+        publicKey,
+        solToLamports(amount),
+        selectedAgent === "A" ? 0 : 1
+      );
+      const tx = new Transaction().add(ix);
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = publicKey;
+
+      const sig = await sendTransaction(tx, connection, { maxRetries: 5, skipPreflight: true });
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+
+      toast.success("Stake placed!", {
+        id: toastId,
+        action: { label: "View", onClick: () => window.open(`https://solscan.io/tx/${sig}`, "_blank") },
+      });
+      setSolAmount("");
+      onStakePlaced?.();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Transaction failed", { id: toastId });
+    } finally {
+      setStakeLoading(false);
+    }
+  }, [solAmount, selectedAgent, isScheduled, scheduledBattle, battle, publicKey, token, connection, sendTransaction]);
+
+  if (!isStakingOpen) {
+    return (
+      <div className="p-4 text-center">
+        <Flame className="w-12 h-12 mx-auto mb-3 text-orange-400" />
+        <p className="font-display text-sm font-bold text-foreground">Staking Closed</p>
+        <p className="text-xs text-muted-foreground mt-1">Battle has started. No more stakes allowed.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Countdown for scheduled battles */}
+      {isScheduled && scheduledBattle && (
+        <div className="p-3 rounded-lg bg-secondary/10 border border-secondary/30">
+          <CountdownTimer seconds={scheduledBattle.seconds_until_battle} />
+          <p className="text-xs text-muted-foreground mt-1">
+            Place your stake before the countdown ends!
+          </p>
+        </div>
+      )}
+
+      {/* Amount Input */}
+      <div>
+        <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
+        <Input
+          type="number"
+          placeholder="0.00"
+          value={solAmount}
+          onChange={(e) => setSolAmount(e.target.value)}
+          className="font-mono bg-muted/50 border-border"
+          min={0}
+          step={0.1}
+        />
+      </div>
+
+      {/* Quick Bet Buttons */}
+      <div className="flex flex-wrap gap-2">
+        {[0.5, 1, 5, "MAX"].map((v) => (
+          <Button key={String(v)} variant="outline" size="sm" className="font-display text-xs" onClick={() => quickBet(v as number | "MAX")}>
+            {v === "MAX" ? "MAX" : v}
+          </Button>
+        ))}
+      </div>
+
+      {/* Agent Selection */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => setSelectedAgent("A")}
+          className={`p-3 rounded-lg border text-left transition-all ${
+            selectedAgent === "A"
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border hover:border-muted-foreground"
+          }`}
+        >
+          <p className="font-display text-sm font-bold truncate">{battle.agentA.name}</p>
+          <p className="text-xs text-muted-foreground">{probA}% win chance</p>
+          {isScheduled && scheduledBattle && (
+            <p className="text-xs text-accent mt-1">
+              {(Number(scheduledBattle.total_stake_a) / 1e9).toFixed(2)} SOL staked
+            </p>
+          )}
+        </button>
+        <button
+          onClick={() => setSelectedAgent("B")}
+          className={`p-3 rounded-lg border text-left transition-all ${
+            selectedAgent === "B"
+              ? "border-secondary bg-secondary/10 text-secondary"
+              : "border-border hover:border-muted-foreground"
+          }`}
+        >
+          <p className="font-display text-sm font-bold truncate">{battle.agentB.name}</p>
+          <p className="text-xs text-muted-foreground">{probB}% win chance</p>
+          {isScheduled && scheduledBattle && (
+            <p className="text-xs text-accent mt-1">
+              {(Number(scheduledBattle.total_stake_b) / 1e9).toFixed(2)} SOL staked
+            </p>
+          )}
+        </button>
+      </div>
+
+      {/* Potential Return */}
+      <div className="flex justify-between items-center pt-2">
+        <span className="text-xs text-muted-foreground">Potential Return</span>
+        <span className="font-display text-sm font-bold text-secondary flex items-center gap-1">
+          <TrendingUp className="w-3.5 h-3.5" />
+          {potentialReturn.toFixed(2)} SOL
+        </span>
+      </div>
+
+      {/* Stake Button */}
+      <Button
+        className="w-full font-display text-sm glow-teal bg-secondary text-secondary-foreground hover:bg-secondary/90"
+        onClick={handlePlaceStake}
+        disabled={stakeLoading || !connected}
+      >
+        {stakeLoading ? (
+          <span className="animate-pulse">Placing stake...</span>
+        ) : !connected ? (
+          <>
+            <Wallet className="w-4 h-4 mr-2" />
+            Connect Wallet
+          </>
+        ) : (
+          <>
+            <Zap className="w-4 h-4 mr-2" />
+            PLACE STAKE
+          </>
+        )}
+      </Button>
+
+      {/* Total Pool Info */}
+      {isScheduled && scheduledBattle && (
+        <div className="pt-3 border-t border-border/50">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">Total Prize Pool</span>
+            <span className="font-display font-bold text-accent">
+              {((Number(scheduledBattle.total_stake_a) + Number(scheduledBattle.total_stake_b)) / 1e9).toFixed(2)} SOL
+            </span>
+          </div>
+          <div className="flex justify-between text-xs mt-1">
+            <span className="text-muted-foreground">Backers</span>
+            <span className="font-display font-bold">
+              {scheduledBattle.stake_count_a + scheduledBattle.stake_count_b}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function BattleStation() {
   const { battleId } = useParams<{ battleId: string }>();
   const navigate = useNavigate();
   const { data: apiArenas } = useActiveArenas();
-  const [arenaByAddress, setArenaByAddress] = useState<ArenaActive | null | undefined>(undefined);
+  const { data: activeBattles } = useActiveBattles();
   const apiBattles = useMemo(() => (apiArenas ?? []).map(arenaToBattle), [apiArenas]);
   const mockBattle = battles.find((b) => b.id === battleId);
   const apiBattle = apiBattles.find((b) => b.id === battleId);
-  const battleFromAddress = arenaByAddress != null ? arenaToBattle(arenaByAddress) : undefined;
-  const battle: Battle | undefined = apiBattle ?? battleFromAddress ?? mockBattle;
+  
+  // Find scheduled battle if applicable
+  const scheduledBattle = useMemo(() => {
+    return activeBattles?.battles.find((b) => b.battle_id === battleId);
+  }, [activeBattles, battleId]);
 
-  // Fetch arena by address when not in active list (e.g. settled arena)
-  const needsArenaFetch = !!(battleId && isArenaAddress(battleId) && !apiBattle);
-  useEffect(() => {
-    if (!needsArenaFetch) return;
-    fetchArenaByAddress(battleId!)
-      .then((a) => setArenaByAddress(a ?? null));
-  }, [battleId, needsArenaFetch]);
+  // Convert scheduled battle to Battle format
+  const scheduledAsBattle: Battle | undefined = useMemo(() => {
+    if (!scheduledBattle) return undefined;
+    return {
+      id: scheduledBattle.battle_id,
+      gameType: scheduledBattle.game_mode.replace("_", " "),
+      status: scheduledBattle.status === "battling" ? "live" : "pending",
+      agentA: {
+        id: scheduledBattle.agent_a_pubkey,
+        name: scheduledBattle.agent_a_name,
+        avatar: scheduledBattle.agent_a_name.slice(0, 2).toUpperCase(),
+        tier: "gold",
+        wins: 0,
+        losses: 0,
+        winRate: 50,
+        stats: { logic: 50, speed: 50, risk: 50, consistency: 50, adaptability: 50 },
+        recentPerformance: [],
+        totalEarnings: 0,
+      },
+      agentB: {
+        id: scheduledBattle.agent_b_pubkey,
+        name: scheduledBattle.agent_b_name,
+        avatar: scheduledBattle.agent_b_name.slice(0, 2).toUpperCase(),
+        tier: "gold",
+        wins: 0,
+        losses: 0,
+        winRate: 50,
+        stats: { logic: 50, speed: 50, risk: 50, consistency: 50, adaptability: 50 },
+        recentPerformance: [],
+        totalEarnings: 0,
+      },
+      winProbA: 50,
+      winProbB: 50,
+      prizePool: (Number(scheduledBattle.total_stake_a) + Number(scheduledBattle.total_stake_b)) / 1e9,
+      spectators: scheduledBattle.stake_count_a + scheduledBattle.stake_count_b,
+      startTime: "Starting soon",
+    };
+  }, [scheduledBattle]);
 
-  const queryClient = useQueryClient();
-  const { token, login, isLoading: authLoading } = useAuth();
-  const { connected, publicKey, sendTransaction } = useWallet();
-  const { setVisible: setWalletModalVisible } = useWalletModal();
+  const battle: Battle | undefined = scheduledAsBattle || apiBattle || mockBattle;
+
+  const { token } = useAuth();
+  const { connected } = useWallet();
   const socketState = useBattleSocket(battleId ?? undefined, token);
 
   const [mockLogs, setMockLogs] = useState<LogEntry[]>([]);
   const [scoreA, setScoreA] = useState(50);
   const [scoreB, setScoreB] = useState(50);
-  const [countdown, setCountdown] = useState({ m: 2, s: 45 });
   const [battleEnd, setBattleEnd] = useState<"A" | "B" | null>(null);
   const [impactSide, setImpactSide] = useState<"left" | "right" | null>(null);
-  const [solAmount, setSolAmount] = useState("");
-  const [selectedAgent, setSelectedAgent] = useState<"A" | "B">("A");
-  const [supporters] = useState(MOCK_SUPPORTERS);
-  const [startBattleLoading, setStartBattleLoading] = useState(false);
-  const [startBattleError, setStartBattleError] = useState<string | null>(null);
-  const [resetLoading, setResetLoading] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
-  const [stakeLoading, setStakeLoading] = useState(false);
   const [stakingSheetOpen, setStakingSheetOpen] = useState(false);
-  const { connection } = useConnection();
 
-  const useRealTime = battleId && isArenaAddress(battleId);
-  const logs = useRealTime && socketState.logs.length > 0 ? socketState.logs : mockLogs;
+  const isScheduled = !!scheduledBattle;
+  const isLive = battle?.status === "live" || socketState.isLive;
+  const isPending = battle?.status === "pending";
 
-  // Sync socket winner to battleEnd
+  // Auto-refresh scheduled battle data
+  const queryClient = useQueryClient();
   useEffect(() => {
-    if (socketState.winner !== null && battle) {
-      setBattleEnd(socketState.winner === 0 ? "A" : "B");
-    }
-  }, [socketState.winner, battle]);
+    if (!isScheduled) return;
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["matchmaking", "battles"] });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isScheduled, queryClient]);
 
-  // Sync settled arena winner to battleEnd
-  useEffect(() => {
-    if (arenaByAddress?.status === "Settled" && arenaByAddress.winnerSide !== undefined && arenaByAddress.winnerSide !== null) {
-      setBattleEnd(arenaByAddress.winnerSide === 0 ? "A" : "B");
-    }
-  }, [arenaByAddress]);
-
-  // Redirect if battle not found (allow settled arenas when useRealTime)
+  // Redirect if battle not found
   useEffect(() => {
     if (!battleId) return;
-    if (needsArenaFetch && arenaByAddress === undefined) return;
     if (!battle) {
       navigate("/arena", { replace: true });
-      return;
     }
-    if (battle.status !== "live" && battle.status !== "concluded" && !useRealTime) {
-      navigate("/arena", { replace: true });
-    }
-  }, [battle, battleId, navigate, useRealTime, needsArenaFetch, arenaByAddress]);
+  }, [battle, battleId, navigate]);
 
-  // Append mock log lines (only when NOT using real-time socket data)
+  // Generate mock logs for visual effect
   useEffect(() => {
-    if (!battle || battleEnd || useRealTime) return;
+    if (!battle || battleEnd || isScheduled) return;
     let logId = 0;
     let tick = 0;
     const interval = setInterval(() => {
@@ -162,283 +425,16 @@ export default function BattleStation() {
         const next = [...prev, { ...template, agent, id: ++logId, time }];
         return next.slice(-50);
       });
-      if (template.isAdvantage) {
-        if (agent === battle.agentA.name) {
-          setImpactSide("left");
-          setScoreA((s) => Math.min(100, s + 2));
-          setScoreB((s) => Math.max(0, s - 2));
-        } else {
-          setImpactSide("right");
-          setScoreB((s) => Math.min(100, s + 2));
-          setScoreA((s) => Math.max(0, s - 2));
-        }
-        setTimeout(() => setImpactSide(null), 400);
-      }
       tick++;
     }, 2200);
     return () => clearInterval(interval);
-  }, [battle, battleEnd, useRealTime]);
+  }, [battle, battleEnd, isScheduled]);
 
-  // Update scores from socket logs (advantage = success type)
-  useEffect(() => {
-    if (!useRealTime || !battle) return;
-    const lastLog = socketState.logs[socketState.logs.length - 1];
-    if (lastLog?.isAdvantage) {
-      if (lastLog.agent === battle.agentA.name) {
-        setImpactSide("left");
-        setScoreA((s) => Math.min(100, s + 2));
-        setScoreB((s) => Math.max(0, s - 2));
-      } else {
-        setImpactSide("right");
-        setScoreB((s) => Math.min(100, s + 2));
-        setScoreA((s) => Math.max(0, s - 2));
-      }
-      setTimeout(() => setImpactSide(null), 400);
-    }
-  }, [socketState.logs, useRealTime, battle]);
+  if (!battle) return null;
 
-  // Countdown (mock only)
-  useEffect(() => {
-    if (!battle || battleEnd || useRealTime) return;
-    const t = setInterval(() => {
-      setCountdown((c) => {
-        let { m, s } = c;
-        s--;
-        if (s < 0) {
-          s = 59;
-          m--;
-        }
-        if (m < 0) {
-          s = 0;
-          return { m: 0, s: 0 };
-        }
-        return { m, s };
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [battle, battleEnd, useRealTime]);
-
-  // When countdown hits 0 (mock only)
-  useEffect(() => {
-    if (!battle || battleEnd || useRealTime) return;
-    if (countdown.m === 0 && countdown.s === 0) {
-      setBattleEnd(scoreA >= scoreB ? "A" : "B");
-    }
-  }, [countdown.m, countdown.s, battle, battleEnd, scoreA, scoreB, useRealTime]);
-
-  const handleStartBattle = useCallback(async () => {
-    if (!battle || !battleId || !token) return;
-    if (!isArenaAddress(battleId)) return;
-    setStartBattleLoading(true);
-    setStartBattleError(null);
-    try {
-      const res = await fetchBattleStart(
-        {
-          battleId: battleId,
-          arenaAddress: battleId,
-          agentA: { id: battle.agentA.id, name: battle.agentA.name, winRate: battle.agentA.winRate },
-          agentB: { id: battle.agentB.id, name: battle.agentB.name, winRate: battle.agentB.winRate },
-          gameMode: "TRADING_BLITZ",
-        },
-        token
-      );
-      if (!res.ok) {
-        setStartBattleError(res.error ?? "Failed to start battle");
-      } else {
-        // Battle completed — refresh arena data so UI reflects Settled status
-        queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
-        queryClient.invalidateQueries({ queryKey: ["arena", "settled"] });
-        const updated = await fetchArenaByAddress(battleId);
-        setArenaByAddress(updated ?? null);
-      }
-    } catch (e) {
-      setStartBattleError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStartBattleLoading(false);
-    }
-  }, [battle, battleId, token, queryClient]);
-
-  const handleResetArena = useCallback(async () => {
-    if (!battleId || !isArenaAddress(battleId) || !token) return;
-    setResetLoading(true);
-    setResetError(null);
-    setStartBattleError(null);
-    try {
-      await fetchResetArena(battleId, token);
-      toast.success("Arena reset! Place your stake, then Start Battle.");
-      setBattleEnd(null);
-      setScoreA(50);
-      setScoreB(50);
-      // Refetch arena so status becomes Active/live (otherwise UI still shows concluded)
-      queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
-      queryClient.invalidateQueries({ queryKey: ["arena", "settled"] });
-      const updated = await fetchArenaByAddress(battleId);
-      setArenaByAddress(updated ?? null);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setResetError(msg);
-      toast.error(msg);
-    } finally {
-      setResetLoading(false);
-    }
-  }, [battleId, token, queryClient]);
-
-  const quickBet = useCallback(
-    (value: number | "MAX") => {
-      if (value === "MAX") setSolAmount("100");
-      else setSolAmount(String(value));
-    },
-    []
-  );
-
-  const handlePlaceStake = useCallback(async () => {
-    if (!battleId || !battle) return;
-    if (!useRealTime) {
-      toast.info("Staking is only available for live arena battles");
-      return;
-    }
-    if (battle.status === "concluded") {
-      toast.error("This arena has ended. Reset it first to stake in a new battle.");
-      return;
-    }
-    if (!connected || !publicKey) {
-      setWalletModalVisible(true);
-      return;
-    }
-    const amount = parseFloat(solAmount) || 0;
-    if (amount <= 0) {
-      toast.error("Enter a valid stake amount");
-      return;
-    }
-    setStakeLoading(true);
-    const toastId = toast.loading("Confirm stake in your wallet...");
-    try {
-      const { Transaction } = await import("@solana/web3.js");
-      const ix = await buildPlaceStakeInstruction(
-        connection,
-        new (await import("@solana/web3.js")).PublicKey(battleId),
-        publicKey,
-        solToLamports(amount),
-        selectedAgent === "A" ? 0 : 1
-      );
-      const tx = new Transaction().add(ix);
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = publicKey;
-
-      // Simulate first to surface the real error (e.g. arena settled, insufficient funds)
-      const sim = await connection.simulateTransaction(tx);
-      if (sim.value.err) {
-        const errLogs = sim.value.logs ?? [];
-        const errLogStr = errLogs.join(" ");
-        const errObj = sim.value.err;
-        const errStr = typeof errObj === "object" ? JSON.stringify(errObj) : String(errObj);
-        let hint = errLogStr || errStr;
-        if (errLogStr.includes("InvalidArenaState") || errStr.includes("InvalidArenaState") || errStr.includes("6003")) {
-          hint = "ARENA_SYNC_NEEDED";
-        } else if (errLogStr.includes("insufficient") || errLogStr.includes("0x1") || errStr.includes("0x1")) {
-          hint = "Insufficient SOL for stake + fees. Need at least stake amount + ~0.01 SOL for fees.";
-        } else if (errLogStr.includes("Invalid arena account") || errLogStr.includes("not found")) {
-          hint = "Arena account not found. Make sure you're on Devnet.";
-        }
-        throw new Error(hint);
-      }
-
-      const sig = await sendTransaction(tx, connection, {
-        maxRetries: 5,
-        preflightCommitment: "confirmed",
-        skipPreflight: true,
-      });
-
-      // Wait for confirmation before showing success (tx can fail on-chain after submit)
-      try {
-        await connection.confirmTransaction(
-          { signature: sig, blockhash, lastValidBlockHeight },
-          "confirmed"
-        );
-      } catch (confirmErr) {
-        const status = await connection.getSignatureStatus(sig).catch(() => null);
-        const errStr = status?.err ? JSON.stringify(status.err) : "";
-        if (errStr.includes("InvalidArenaState") || errStr.includes("6003")) {
-          throw new Error("ARENA_SYNC_NEEDED");
-        }
-        throw confirmErr;
-      }
-
-      toast.success("Stake placed!", {
-        id: toastId,
-        description: `View on Solscan`,
-        action: {
-          label: "View",
-          onClick: () =>
-            window.open(`https://solscan.io/tx/${sig}`, "_blank"),
-        },
-      });
-      setSolAmount("");
-
-      // Refresh arena data so pool amounts update in the UI
-      queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
-      fetchArenaByAddress(battleId).then((updated) => {
-        if (updated) setArenaByAddress(updated);
-      });
-    } catch (e) {
-      const err = e as Error & { transactionMessage?: string; logs?: string[] };
-      const msg =
-        err.transactionMessage ??
-        err.message ??
-        String(e);
-      const isRejected = msg.includes("User rejected") || msg.includes("rejected") || msg.includes("denied");
-      if (msg === "ARENA_SYNC_NEEDED" && battleId) {
-        const syncRes = await fetchSyncArena(battleId);
-        queryClient.invalidateQueries({ queryKey: ["arena", "active"] });
-        queryClient.invalidateQueries({ queryKey: ["arena", "settled"] });
-        if (syncRes.ok) {
-          toast.success("Arena was already settled. Moved to Concluded. Reset it to stake again.", { id: toastId });
-          const updated = await fetchArenaByAddress(battleId);
-          setArenaByAddress(updated ?? null);
-        } else {
-          toast.error("This arena has already been settled. Reset it first to stake again.", { id: toastId });
-        }
-      } else {
-        const userMsg = isRejected ? "Transaction cancelled" : msg;
-        toast.error(userMsg, { id: toastId });
-      }
-    } finally {
-      setStakeLoading(false);
-    }
-  }, [
-    battleId,
-    battle,
-    connected,
-    publicKey,
-    useRealTime,
-    solAmount,
-    selectedAgent,
-    connection,
-    sendTransaction,
-    setWalletModalVisible,
-  ]);
-
-  const agentA = battle?.agentA;
-  const agentB = battle?.agentB;
-  const probA = battle?.winProbA ?? 50;
-  const probB = battle?.winProbB ?? 50;
-  const sol = parseFloat(solAmount) || 0;
-  const prob = selectedAgent === "A" ? probA : probB;
-  const potentialReturn = prob > 0 ? (sol * 100) / prob : 0;
-
-  const isLoading = needsArenaFetch && arenaByAddress === undefined;
-  if (isLoading) {
-    return (
-      <div className="relative min-h-screen grid-bg overflow-hidden flex items-center justify-center">
-        <div className="glass rounded-2xl p-8 border border-border text-center">
-          <div className="animate-spin w-10 h-10 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="font-display text-sm text-muted-foreground">Loading battle...</p>
-        </div>
-      </div>
-    );
-  }
-  if (!battle || !agentA || !agentB) return null;
+  const agentA = battle.agentA;
+  const agentB = battle.agentB;
+  const logs = isLive && socketState.logs.length > 0 ? socketState.logs : mockLogs;
 
   return (
     <div className="relative min-h-screen grid-bg overflow-hidden">
@@ -450,8 +446,7 @@ export default function BattleStation() {
             <div className="flex items-center gap-3">
               <button
                 onClick={() => navigate("/arena")}
-                className="p-2 rounded-lg border border-border hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground"
-                aria-label="Back to Arena"
+                className="p-2 rounded-lg border border-border hover:bg-muted/50 transition-colors"
               >
                 <ArrowLeft className="w-4 h-4" />
               </button>
@@ -459,104 +454,33 @@ export default function BattleStation() {
                 <h1 className="font-display text-lg md:text-xl font-bold text-foreground">
                   {battle.gameType}
                 </h1>
-                <p className="text-xs text-muted-foreground">Live AI battle — stake & spectate</p>
+                <p className="text-xs text-muted-foreground">
+                  {isScheduled ? "Scheduled Battle — Stake Now!" : "Live AI Battle"}
+                </p>
               </div>
-              <span className="live-badge font-display text-xs font-bold px-2.5 py-1 rounded-md flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                LIVE
-              </span>
-            </div>
-            <div className="flex items-center gap-4 font-display text-sm">
-              {useRealTime && !socketState.isLive && !battleEnd && (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="sm"
-                        onClick={token ? handleStartBattle : () => setWalletModalVisible(true)}
-                        disabled={authLoading || startBattleLoading}
-                        className="font-display"
-                      >
-                        <Swords className="w-4 h-4 mr-2" />
-                        {token
-                          ? (startBattleLoading ? "Starting..." : "Start Battle")
-                          : authLoading
-                          ? "Signing in..."
-                          : "Connect wallet to Start"}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[240px]">
-                      <p className="font-semibold">Stake first, then start</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Place your stake before starting. Once you click Start Battle, the battle runs and settles — no more staking.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              )}
-              {startBattleError && (
-                <span className="text-destructive text-xs">{startBattleError}</span>
-              )}
-              {useRealTime && battleEnd && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Button
-                    size="sm"
-                    variant="default"
-                    onClick={() =>
-                      navigate(`/arena/battle/${battle?.id}/result`, {
-                        state: {
-                          userBackedWinner: selectedAgent === battleEnd,
-                          userStake: parseFloat(solAmount) || 0,
-                        },
-                      })
-                    }
-                    className="font-display"
-                  >
-                    Claim rewards
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={token ? handleResetArena : () => setWalletModalVisible(true)}
-                    disabled={authLoading || resetLoading}
-                    className="font-display"
-                  >
-                    <RotateCcw className="w-4 h-4 mr-2" />
-                    {token
-                      ? (resetLoading ? "Resetting..." : "Reset Arena")
-                      : authLoading
-                      ? "Signing in..."
-                      : "Connect wallet to Reset"}
-                  </Button>
-                </div>
-              )}
-              {resetError && (
-                <span className="text-destructive text-xs block mt-1">
-                  {resetError}
-                  {resetError.includes("Vault must be empty") && (
-                    <span className="block mt-0.5 text-muted-foreground">
-                      Winners must claim rewards first, then reset.
-                    </span>
-                  )}
+              {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0 && (
+                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 border border-primary/30 text-xs font-display font-bold text-primary">
+                  <Clock className="w-3 h-3" />
+                  STAKING OPEN
                 </span>
               )}
-              {!useRealTime && (
-                <span className="text-muted-foreground">
-                  Round ends in{" "}
-                  <span className="text-foreground font-bold tabular-nums">
-                    {String(countdown.m).padStart(2, "0")}:{String(countdown.s).padStart(2, "0")}
-                  </span>
+              {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle <= 0 && (
+                <span className="live-badge font-display text-xs font-bold px-2.5 py-1 rounded-md flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                  LIVE
                 </span>
               )}
-              {useRealTime && socketState.isLive && (
-                <span className="text-secondary text-xs font-bold">LIVE</span>
-              )}
             </div>
+
+            {/* Countdown Display */}
+            {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0 && (
+              <CountdownTimer seconds={scheduledBattle.seconds_until_battle} />
+            )}
           </div>
         </header>
 
         <div className="flex-1 flex flex-col md:flex-row min-h-0">
-          {/* Combat Zone - Battle Visualizer */}
+          {/* Battle Visualizer */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             <BattleVisualizer
               agentA={{
@@ -583,275 +507,73 @@ export default function BattleStation() {
               result={
                 battleEnd
                   ? {
-                      winner: battleEnd === "A" ? "A" : "B",
-                      victoryReason: battleEnd === "A"
-                        ? `${agentA.name} dominated with superior strategy`
-                        : `${agentB.name} dominated with superior strategy`,
-                      metrics: [
-                        { label: "Accuracy", valueA: Math.min(100, scoreA + 42), valueB: Math.min(100, scoreB + 34) },
-                        { label: "Logic", valueA: agentA.stats.logic, valueB: agentB.stats.logic },
-                        { label: "Speed", valueA: agentA.stats.speed, valueB: agentB.stats.speed },
-                        { label: "Adaptability", valueA: agentA.stats.adaptability, valueB: agentB.stats.adaptability },
-                      ],
+                      winner: battleEnd,
+                      victoryReason: `${battleEnd === "A" ? agentA.name : agentB.name} wins!`,
+                      metrics: [],
                     }
                   : null
               }
-              resultLink={
-                battleEnd && battle?.id
-                  ? {
-                      to: `/arena/battle/${battle.id}/result`,
-                      state: {
-                        userBackedWinner: selectedAgent === battleEnd,
-                        userStake: parseFloat(solAmount) || 0,
-                      },
-                    }
-                  : undefined
-              }
-              onResultClose={() => {
-                setBattleEnd(null);
-                navigate("/arena");
-              }}
             />
           </div>
 
-          {/* Staking Terminal (right sidebar) - hidden on mobile, shown via FAB + Sheet */}
-          <aside className="hidden md:flex w-full md:w-[320px] lg:w-[360px] shrink-0 border-l border-border glass flex-col">
+          {/* Staking Sidebar (Desktop) */}
+          <aside className="hidden md:flex w-[360px] shrink-0 border-l border-border glass flex-col">
             <div className="p-4 border-b border-border">
               <div className="flex items-center gap-2 mb-4">
-                <h2 className="font-display text-sm font-bold tracking-wider text-foreground">
-                  STAKING TERMINAL
-                </h2>
+                <h2 className="font-display text-sm font-bold tracking-wider">STAKING TERMINAL</h2>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
-                        aria-label="Staking help"
-                      >
+                      <button className="text-muted-foreground hover:text-foreground">
                         <HelpCircle className="w-3.5 h-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="left" className="max-w-[260px]">
-                      <p className="font-medium mb-1">Quick start</p>
-                      <p className="text-xs text-muted-foreground mb-2">
-                        <strong>Stake first, then Start Battle.</strong> Once you click Start Battle, the battle runs and settles — no more staking.
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Choose an agent to back. Higher odds = lower potential return.
-                      </p>
+                    <TooltipContent side="left">
+                      <p className="text-xs">Stake SOL on your predicted winner. Winners split the losing pool!</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               </div>
-              <div className="space-y-3">
-                <div>
-                  <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
-                  <Input
-                    type="number"
-                    placeholder="0.00"
-                    value={solAmount}
-                    onChange={(e) => setSolAmount(e.target.value)}
-                    className="font-mono bg-muted/50 border-border input-holographic-focus"
-                    min={0}
-                    step={0.1}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {([0.5, 1, 5, "MAX"] as const).map((v) => (
-                    <Button
-                      key={String(v)}
-                      variant="outline"
-                      size="sm"
-                      className="font-display text-xs"
-                      onClick={() => quickBet(v)}
-                    >
-                      {v === "MAX" ? "MAX" : v}
-                    </Button>
-                  ))}
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setSelectedAgent("A")}
-                    className={`p-3 rounded-lg border text-left transition-all ${
-                      selectedAgent === "A"
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border hover:border-muted-foreground"
-                    }`}
-                  >
-                    <p className="font-display text-sm font-bold">{agentA.name}</p>
-                    <p className="text-xs text-muted-foreground">{probA}%</p>
-                  </button>
-                  <button
-                    onClick={() => setSelectedAgent("B")}
-                    className={`p-3 rounded-lg border text-left transition-all ${
-                      selectedAgent === "B"
-                        ? "border-secondary bg-secondary/10 text-secondary"
-                        : "border-border hover:border-muted-foreground"
-                    }`}
-                  >
-                    <p className="font-display text-sm font-bold">{agentB.name}</p>
-                    <p className="text-xs text-muted-foreground">{probB}%</p>
-                  </button>
-                </div>
-                <div className="flex justify-between items-center pt-2">
-                  <span className="text-xs text-muted-foreground">Potential Return</span>
-                  <span className="font-display text-sm font-bold text-secondary flex items-center gap-1">
-                    <TrendingUp className="w-3.5 h-3.5" />
-                    {potentialReturn.toFixed(2)} SOL
-                  </span>
-                </div>
-                <Button
-                  className="w-full font-display text-sm glow-teal bg-secondary text-secondary-foreground hover:bg-secondary/90"
-                  onClick={handlePlaceStake}
-                  disabled={stakeLoading}
-                >
-                  <Zap className="w-4 h-4" />
-                  {stakeLoading ? "Placing stake..." : "PLACE STAKE"}
-                </Button>
-              </div>
+              <StakingPanel battle={battle} scheduledBattle={scheduledBattle} />
             </div>
-            <div className="flex-1 flex flex-col min-h-0 p-4">
-              <h3 className="font-display text-xs font-bold tracking-wider text-muted-foreground mb-2">
-                RECENT SUPPORTERS
-              </h3>
-              <ScrollArea className="flex-1">
-                <ul className="space-y-2 text-xs">
-                  {supporters.map((s, i) => (
-                    <li key={i} className="text-muted-foreground">
-                      <span className="text-foreground font-medium">{s.username}</span>
-                      {" backed "}
-                      <span
-                        className={
-                          s.agent === agentA.name ? "text-primary font-display" : "text-secondary font-display"
-                        }
-                      >
-                        {s.agent}
-                      </span>
-                      {" with "}
-                      <span className="text-accent font-display">{s.amount} SOL</span>
-                      .
-                    </li>
+
+            {/* Recent Supporters */}
+            <div className="flex-1 p-4">
+              <h3 className="font-display text-xs font-bold text-muted-foreground mb-3">RECENT STAKES</h3>
+              <ScrollArea className="h-[300px]">
+                <div className="space-y-2">
+                  {/* Mock supporters for now */}
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center justify-between p-2 rounded bg-muted/30 text-xs">
+                      <span className="text-muted-foreground">User {i}</span>
+                      <span className="font-display font-bold text-accent">{i * 0.5} SOL</span>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </ScrollArea>
             </div>
           </aside>
 
-          {/* Mobile: Floating Stake FAB + Sheet */}
+          {/* Mobile Staking FAB */}
           <div className="md:hidden fixed bottom-6 right-6 z-40">
             <Sheet open={stakingSheetOpen} onOpenChange={setStakingSheetOpen}>
               <SheetTrigger asChild>
-                <Button
-                  size="lg"
-                  className="rounded-full h-14 w-14 p-0 shadow-lg glow-teal bg-secondary text-secondary-foreground hover:bg-secondary/90"
-                  aria-label="Open staking"
-                >
+                <Button size="lg" className="rounded-full h-14 w-14 p-0 glow-teal bg-secondary">
                   <Zap className="w-6 h-6" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="bottom" className="h-[85dvh] overflow-y-auto rounded-t-2xl">
+              <SheetContent side="bottom" className="h-[85dvh]">
                 <SheetHeader>
-                  <div className="flex items-center gap-2">
-                    <SheetTitle className="font-display">STAKING TERMINAL</SheetTitle>
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
-                            aria-label="Staking help"
-                          >
-                            <HelpCircle className="w-3.5 h-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="left" className="max-w-[260px]">
-                          <p className="font-medium mb-1">Quick start</p>
-                          <p className="text-xs text-muted-foreground mb-2">
-                            <strong>Stake first, then Start Battle.</strong> Once you click Start Battle, the battle runs and settles — no more staking.
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Choose an agent to back. Higher odds = lower potential return.
-                          </p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </div>
+                  <SheetTitle className="font-display">STAKING TERMINAL</SheetTitle>
                 </SheetHeader>
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
-                    <Input
-                      type="number"
-                      placeholder="0.00"
-                      value={solAmount}
-                      onChange={(e) => setSolAmount(e.target.value)}
-                      className="font-mono bg-muted/50 border-border"
-                      min={0}
-                      step={0.1}
-                    />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {([0.5, 1, 5, "MAX"] as const).map((v) => (
-                      <Button
-                        key={String(v)}
-                        variant="outline"
-                        size="sm"
-                        className="font-display text-xs"
-                        onClick={() => quickBet(v)}
-                      >
-                        {v === "MAX" ? "MAX" : v}
-                      </Button>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => setSelectedAgent("A")}
-                      className={`p-3 rounded-lg border text-left transition-all ${
-                        selectedAgent === "A"
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border hover:border-muted-foreground"
-                      }`}
-                    >
-                      <p className="font-display text-sm font-bold">{agentA.name}</p>
-                      <p className="text-xs text-muted-foreground">{probA}%</p>
-                    </button>
-                    <button
-                      onClick={() => setSelectedAgent("B")}
-                      className={`p-3 rounded-lg border text-left transition-all ${
-                        selectedAgent === "B"
-                          ? "border-secondary bg-secondary/10 text-secondary"
-                          : "border-border hover:border-muted-foreground"
-                      }`}
-                    >
-                      <p className="font-display text-sm font-bold">{agentB.name}</p>
-                      <p className="text-xs text-muted-foreground">{probB}%</p>
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center pt-2">
-                    <span className="text-xs text-muted-foreground">Potential Return</span>
-                    <span className="font-display text-sm font-bold text-secondary flex items-center gap-1">
-                      <TrendingUp className="w-3.5 h-3.5" />
-                      {potentialReturn.toFixed(2)} SOL
-                    </span>
-                  </div>
-                  <Button
-                    className="w-full font-display text-sm glow-teal bg-secondary text-secondary-foreground hover:bg-secondary/90"
-                    onClick={handlePlaceStake}
-                    disabled={stakeLoading}
-                  >
-                    <Zap className="w-4 h-4" />
-                    {stakeLoading ? "Placing stake..." : "PLACE STAKE"}
-                  </Button>
+                <div className="mt-4">
+                  <StakingPanel battle={battle} scheduledBattle={scheduledBattle} />
                 </div>
               </SheetContent>
             </Sheet>
           </div>
         </div>
       </div>
-
-      {/* Result overlay is handled by BattleVisualizer */}
     </div>
   );
 }
-

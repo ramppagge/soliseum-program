@@ -47,6 +47,7 @@
     --neon-purple: 261 100% 63%;
     --neon-teal: 160 93% 52%;
     --neon-orange: 36 100% 50%;
+    --neon-amber: 45 100% 50%;
     --glass: 0 0% 100% / 0.04;
     --glass-border: 0 0% 100% / 0.08;
     --glass-hover: 0 0% 100% / 0.08;
@@ -106,6 +107,11 @@
   .neon-border-teal {
     border: 1px solid hsla(var(--neon-teal) / 0.4);
     box-shadow: inset 0 0 20px hsla(var(--neon-teal) / 0.05), 0 0 20px hsla(var(--neon-teal) / 0.1);
+  }
+
+  .neon-border-amber {
+    border: 1px solid hsla(var(--neon-amber) / 0.4);
+    box-shadow: inset 0 0 20px hsla(var(--neon-amber) / 0.05), 0 0 20px hsla(var(--neon-amber) / 0.1);
   }
 
   /* Grid background */

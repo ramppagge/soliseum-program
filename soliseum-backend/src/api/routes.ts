@@ -13,6 +13,7 @@ import {
   users,
   agentBattleHistory,
 } from "../db/schema";
+import { leaderboardService } from "../services/LeaderboardService";
 
 // Simple in-memory cache (use Redis in production)
 const cache = new Map<string, { data: unknown; expires: number }>();
@@ -256,47 +257,121 @@ export async function getArenaByAddress(req: Request, res: Response): Promise<vo
   }
 }
 
-/** GET /api/leaderboard - Top agents by credibility and win rate */
-export async function getLeaderboard(_req: Request, res: Response): Promise<void> {
-  const cacheKey = "leaderboard";
-  const cached = getCached<object[]>(cacheKey);
-  if (cached) {
-    res.json(cached);
-    return;
-  }
-
+/** GET /api/leaderboard - Top agents by credibility and win rate (Optimized with Materialized View) */
+export async function getLeaderboard(req: Request, res: Response): Promise<void> {
   try {
-  const limit = Math.min(
-    parseInt(String(_req.query?.limit ?? 50), 10) || 50,
-    100
-  );
+    // Parse query parameters
+    const category = req.query?.category as "Trading" | "Chess" | "Coding" | undefined;
+    const limit = Math.min(parseInt(String(req.query?.limit ?? 50), 10) || 50, 100);
+    const offset = parseInt(String(req.query?.offset ?? 0), 10) || 0;
+    const minBattles = parseInt(String(req.query?.minBattles ?? 0), 10) || 0;
+    const search = req.query?.search as string | undefined;
 
-  const rows = await db
-    .select({
-      pubkey: agents.pubkey,
-      name: agents.name,
-      description: agents.description,
-      category: agents.category,
-      metadataUrl: agents.metadataUrl,
-      totalWins: agents.totalWins,
-      credibilityScore: agents.credibilityScore,
-    })
-    .from(agents)
-    .orderBy(
-      desc(agents.credibilityScore),
-      desc(agents.totalWins)
-    )
-    .limit(limit);
+    // Use optimized LeaderboardService (sub-10ms query via materialized view)
+    const result = await leaderboardService.getLeaderboard({
+      category,
+      limit,
+      offset,
+      minBattles,
+      search,
+    });
 
-  const data = rows.map((r) => ({
-    ...r,
-    winRate: r.totalWins > 0 ? r.totalWins / (r.totalWins + 1) : 0, // Approximate
-  }));
-
-  setCache(cacheKey, data);
-  res.json(data);
+    res.json({
+      ok: true,
+      entries: result.entries,
+      total: result.total,
+      hasMore: result.hasMore,
+      nextOffset: result.nextOffset,
+      category: category || "all",
+    });
   } catch (err) {
-    handleDbError(err, res, "getLeaderboard");
+    console.error("[API] getLeaderboard error:", err);
+    
+    // Fallback to legacy query if materialized view doesn't exist yet
+    try {
+      const limit = Math.min(parseInt(String(req.query?.limit ?? 50), 10) || 50, 100);
+      const rows = await db
+        .select({
+          pubkey: agents.pubkey,
+          name: agents.name,
+          description: agents.description,
+          category: agents.category,
+          metadataUrl: agents.metadataUrl,
+          totalWins: agents.totalWins,
+          totalBattles: agents.totalBattles,
+          credibilityScore: agents.credibilityScore,
+        })
+        .from(agents)
+        .where(eq(agents.agentStatus, "active"))
+        .orderBy(desc(agents.credibilityScore), desc(agents.totalWins))
+        .limit(limit);
+
+      const data = rows.map((r) => ({
+        ...r,
+        win_rate: r.totalBattles > 0 ? Math.round((r.totalWins / r.totalBattles) * 100) : 0,
+        rank: 0,
+        recent_battles: [],
+        win_streak: 0,
+      }));
+
+      res.json({
+        ok: true,
+        entries: data,
+        total: data.length,
+        hasMore: false,
+        fallback: true,
+        error: "Using fallback query - run migration to enable optimized leaderboard",
+      });
+    } catch (fallbackErr) {
+      handleDbError(fallbackErr, res, "getLeaderboard");
+    }
+  }
+}
+
+/** GET /api/leaderboard/hot - Agents with high win rates (70%+) */
+export async function getHotAgents(_req: Request, res: Response): Promise<void> {
+  try {
+    const agents = await leaderboardService.getHotAgents(10);
+    res.json({ ok: true, agents });
+  } catch (err) {
+    handleDbError(err, res, "getHotAgents");
+  }
+}
+
+/** GET /api/leaderboard/rising - Agents on win streaks */
+export async function getRisingStars(_req: Request, res: Response): Promise<void> {
+  try {
+    const agents = await leaderboardService.getRisingStars(10);
+    res.json({ ok: true, agents });
+  } catch (err) {
+    handleDbError(err, res, "getRisingStars");
+  }
+}
+
+/** GET /api/leaderboard/stats - Category statistics */
+export async function getLeaderboardStats(_req: Request, res: Response): Promise<void> {
+  try {
+    const stats = await leaderboardService.getCategoryStats();
+    res.json({ ok: true, stats });
+  } catch (err) {
+    handleDbError(err, res, "getLeaderboardStats");
+  }
+}
+
+/** GET /api/leaderboard/refresh - Manually trigger refresh (admin only) */
+export async function refreshLeaderboard(req: Request, res: Response): Promise<void> {
+  try {
+    // Check admin auth (simplified - add proper admin check)
+    const isAdmin = (req as any).walletAddress === process.env.ADMIN_WALLET;
+    if (!isAdmin && process.env.NODE_ENV === "production") {
+      res.status(403).json({ error: "Admin access required" });
+      return;
+    }
+
+    await leaderboardService.refresh();
+    res.json({ ok: true, message: "Leaderboard refreshed successfully" });
+  } catch (err) {
+    handleDbError(err, res, "refreshLeaderboard");
   }
 }
 
@@ -552,9 +627,10 @@ export async function listAgents(req: Request, res: Response): Promise<void> {
   try {
     const category = req.query?.category as string | undefined;
     const status = (req.query?.status as string | undefined) ?? "active";
+    const owner = req.query?.owner as string | undefined;
     const limit = Math.min(parseInt(String(req.query?.limit ?? 50), 10) || 50, 100);
 
-    const cacheKey = `agents:list:${category ?? "all"}:${status}:${limit}`;
+    const cacheKey = `agents:list:${category ?? "all"}:${status}:${owner ?? "all"}:${limit}`;
     const cached = getCached<object[]>(cacheKey);
     if (cached) {
       res.json(cached);
@@ -574,6 +650,7 @@ export async function listAgents(req: Request, res: Response): Promise<void> {
         totalBattles: agents.totalBattles,
         credibilityScore: agents.credibilityScore,
         createdAt: agents.createdAt,
+        ownerAddress: agents.ownerAddress,
       })
       .from(agents)
       .orderBy(desc(agents.credibilityScore), desc(agents.totalWins))
@@ -582,6 +659,10 @@ export async function listAgents(req: Request, res: Response): Promise<void> {
 
     if (status) {
       query = query.where(eq(agents.agentStatus, status as "active" | "inactive" | "suspended"));
+    }
+
+    if (owner) {
+      query = query.where(eq(agents.ownerAddress, owner));
     }
 
     const rows = await query;
@@ -595,7 +676,7 @@ export async function listAgents(req: Request, res: Response): Promise<void> {
       }));
 
     setCache(cacheKey, data, 10_000);
-    res.json(data);
+    res.json({ agents: data });
   } catch (err) {
     handleDbError(err, res, "listAgents");
   }

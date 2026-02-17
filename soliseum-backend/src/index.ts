@@ -25,6 +25,10 @@ import {
   getSettledArenas,
   invalidateArenaCaches,
   getLeaderboard,
+  getHotAgents,
+  getRisingStars,
+  getLeaderboardStats,
+  refreshLeaderboard,
   getUserHistory,
   getAgentByPubkey,
   getGlobalStats,
@@ -32,6 +36,16 @@ import {
   updateAgent,
   listAgents,
 } from "./api/routes";
+import { leaderboardService } from "./services/LeaderboardService";
+import { matchmakingService } from "./services/MatchmakingService";
+import {
+  enterQueue,
+  leaveQueue,
+  getQueueStatus,
+  getActiveBattles,
+  getBattle,
+  placeStake,
+} from "./api/matchmakingRoutes";
 import {
   validate,
   startBattleBody,
@@ -374,11 +388,70 @@ app.post(
   }
 );
 
+// ─── Leaderboard Routes (Optimized with Materialized Views) ──────────────────
 app.get(
   "/api/leaderboard",
   apiLimiter,
   validate({ query: leaderboardQuery }),
   (req, res) => getLeaderboard(req, res)
+);
+
+app.get(
+  "/api/leaderboard/hot",
+  apiLimiter,
+  (req, res) => getHotAgents(req, res)
+);
+
+app.get(
+  "/api/leaderboard/rising",
+  apiLimiter,
+  (req, res) => getRisingStars(req, res)
+);
+
+app.get(
+  "/api/leaderboard/stats",
+  apiLimiter,
+  (req, res) => getLeaderboardStats(req, res)
+);
+
+// ─── Matchmaking Routes (Auto Elo Matchmaking) ───────────────────────────────
+app.post(
+  "/api/matchmaking/enter",
+  apiLimiter,
+  requireAuth,
+  (req, res) => enterQueue(req, res)
+);
+
+app.post(
+  "/api/matchmaking/leave",
+  apiLimiter,
+  requireAuth,
+  (req, res) => leaveQueue(req, res)
+);
+
+app.get(
+  "/api/matchmaking/status/:pubkey",
+  apiLimiter,
+  (req, res) => getQueueStatus(req, res)
+);
+
+app.get(
+  "/api/matchmaking/battles",
+  apiLimiter,
+  (req, res) => getActiveBattles(req, res)
+);
+
+app.get(
+  "/api/matchmaking/battle/:id",
+  apiLimiter,
+  (req, res) => getBattle(req, res)
+);
+
+app.post(
+  "/api/matchmaking/stake",
+  apiLimiter,
+  requireAuth,
+  (req, res) => placeStake(req, res)
 );
 
 app.get(
@@ -389,6 +462,30 @@ app.get(
 );
 
 // ─── Agent Registration (authenticated) ──────────────────────────────────────
+
+// Helpful message for GET requests (browser visits)
+app.get("/api/agents/register", (_req, res) => {
+  res.status(405).json({
+    ok: false,
+    error: "Method not allowed",
+    message: "This endpoint requires POST with a JSON body",
+    usage: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer <your_jwt_token>"
+      },
+      body: {
+        pubkey: "<agent_pubkey_base58>",
+        name: "Agent Name",
+        category: "Trading | Chess | Coding",
+        description: "Optional description",
+        apiUrl: "Optional agent API URL"
+      }
+    }
+  });
+});
+
 app.post(
   "/api/agents/register",
   apiLimiter,
@@ -669,6 +766,42 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   }
 });
 
+// ─── Initialize Services ─────────────────────────────────────────────────────
+
+// Validate database connection before starting services
+async function validateDatabaseConnection(): Promise<boolean> {
+  try {
+    const { db } = await import("./db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`SELECT 1`);
+    console.log("[DB] Connection validated successfully");
+    return true;
+  } catch (error) {
+    console.error("[DB] Failed to connect to database:", error);
+    console.error("");
+    console.error("Make sure your DATABASE_URL is correct.");
+    console.error("For Supabase free tier, use the Transaction Pooler:");
+    console.error("  postgres://postgres.[ref]:[pass]@aws-0-[region].pooler.supabase.com:6543/postgres");
+    return false;
+  }
+}
+
+// Start services only after DB connection is validated
+validateDatabaseConnection().then((connected) => {
+  if (!connected) {
+    console.error("\n❌ Cannot start server - database connection failed");
+    process.exit(1);
+  }
+
+  // Start auto-refresh for materialized views (every 30 seconds)
+  leaderboardService.startAutoRefresh();
+  console.log("[LeaderboardService] Auto-refresh started (30s interval)");
+
+  // Start matchmaking service (Elo-based auto matchmaking)
+  matchmakingService.start();
+  console.log("[MatchmakingService] Elo matchmaking started");
+});
+
 // ─── Server startup ──────────────────────────────────────────────────────────
 httpServer.on("error", (err) => {
   console.error("[API server error]", err);
@@ -699,6 +832,13 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 function gracefulShutdown(signal: string) {
   console.log(`\n[${signal}] Shutting down gracefully...`);
+
+  // Stop services
+  leaderboardService.stopAutoRefresh();
+  console.log("[Shutdown] Leaderboard auto-refresh stopped");
+  
+  matchmakingService.stop();
+  console.log("[Shutdown] Matchmaking service stopped");
 
   httpServer.close(() => {
     console.log("[Shutdown] API server closed");

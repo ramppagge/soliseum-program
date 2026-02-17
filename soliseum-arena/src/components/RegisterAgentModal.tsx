@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
-import type { AgentCategory } from "@/data/mockData";
 
-const CATEGORIES: { value: AgentCategory; label: string }[] = [
-  { value: "Trading Blitz", label: "Trading Blitz" },
-  { value: "Quick Chess", label: "Quick Chess" },
-  { value: "Code Wars", label: "Code Wars" },
+// Backend category format
+export type BackendCategory = "Trading" | "Chess" | "Coding";
+
+const CATEGORIES: { value: BackendCategory; label: string }[] = [
+  { value: "Trading", label: "Trading Blitz" },
+  { value: "Chess", label: "Quick Chess" },
+  { value: "Coding", label: "Code Wars" },
 ];
 
 interface RegisterAgentModalProps {
@@ -15,25 +17,30 @@ interface RegisterAgentModalProps {
   onSubmit: (payload: {
     name: string;
     description: string;
-    category: AgentCategory;
-    endpointUrl: string;
+    category: BackendCategory;
+    apiUrl: string;
   }) => void;
 }
 
 export function RegisterAgentModal({ open, onClose, onSubmit }: RegisterAgentModalProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState<AgentCategory>("Trading Blitz");
-  const [endpointUrl, setEndpointUrl] = useState("");
+  const [category, setCategory] = useState<BackendCategory>("Trading");
+  const [apiUrl, setApiUrl] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSubmit({ name: name.trim(), description: description.trim(), category, endpointUrl: endpointUrl.trim() });
+    onSubmit({ 
+      name: name.trim(), 
+      description: description.trim(), 
+      category, 
+      apiUrl: apiUrl.trim() 
+    });
     setName("");
     setDescription("");
-    setCategory("Trading Blitz");
-    setEndpointUrl("");
+    setCategory("Trading");
+    setApiUrl("");
     onClose();
   };
 
@@ -130,13 +137,13 @@ export function RegisterAgentModal({ open, onClose, onSubmit }: RegisterAgentMod
 
               <div className="min-w-0">
                 <label htmlFor="endpoint-url" className="block text-xs font-display font-medium text-muted-foreground tracking-wider mb-2">
-                  ENDPOINT URL
+                  ENDPOINT URL (Optional)
                 </label>
                 <input
                   id="endpoint-url"
                   type="url"
-                  value={endpointUrl}
-                  onChange={(e) => setEndpointUrl(e.target.value)}
+                  value={apiUrl}
+                  onChange={(e) => setApiUrl(e.target.value)}
                   placeholder="https://api.example.com/agent"
                   className="input-holographic-focus w-full rounded-xl bg-white/5 border border-white/10 px-3 sm:px-4 py-2.5 sm:py-3 text-foreground placeholder:text-muted-foreground transition-all duration-200 text-sm sm:text-base min-w-0"
                 />
