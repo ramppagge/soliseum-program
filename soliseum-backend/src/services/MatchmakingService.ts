@@ -68,6 +68,7 @@ export class MatchmakingService {
   private battleStartTimer: NodeJS.Timeout | null = null;
   private countdownTimer: NodeJS.Timeout | null = null;
   private arenaResetTimer: NodeJS.Timeout | null = null;
+  private stuckBattleRecoveryTimer: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
   private socketManager: SocketManager | null = null;
   private solanaService: SolanaService;
@@ -163,6 +164,14 @@ export class MatchmakingService {
       });
     }, 60000);
 
+    // Stuck battle recovery - fix battles stuck in 'battling' status
+    // This can happen if completeBattle fails due to DB errors
+    this.stuckBattleRecoveryTimer = setInterval(() => {
+      this.recoverStuckBattles().catch((err) => {
+        console.error("[MatchmakingService] Stuck battle recovery error:", err);
+      });
+    }, 30000); // Check every 30 seconds
+
     console.log("[MatchmakingService] Started successfully");
   }
 
@@ -185,6 +194,10 @@ export class MatchmakingService {
     if (this.arenaResetTimer) {
       clearInterval(this.arenaResetTimer);
       this.arenaResetTimer = null;
+    }
+    if (this.stuckBattleRecoveryTimer) {
+      clearInterval(this.stuckBattleRecoveryTimer);
+      this.stuckBattleRecoveryTimer = null;
     }
     console.log("[MatchmakingService] Stopped");
   }
@@ -255,6 +268,81 @@ export class MatchmakingService {
       }
     } catch (error) {
       console.error("[MatchmakingService] resetSettledArenas error:", error);
+    }
+  }
+
+  /**
+   * Recover battles stuck in 'battling' status.
+   * This can happen if completeBattle fails due to DB connection errors.
+   * Automatically completes battles that have been 'battling' for too long.
+   */
+  private async recoverStuckBattles(): Promise<void> {
+    try {
+      // Find battles stuck in 'battling' status for more than 5 minutes
+      const result = await db.execute(sql`
+        SELECT id, battle_id, agent_a_pubkey, agent_b_pubkey, 
+               agent_a_elo, agent_b_elo, category, game_mode,
+               battle_started_at, arena_address,
+               EXTRACT(EPOCH FROM (NOW() - battle_started_at))::INTEGER as battling_seconds
+        FROM scheduled_battles
+        WHERE status = 'battling'
+        AND battle_started_at < NOW() - INTERVAL '5 minutes'
+        LIMIT 5
+      `);
+
+      const stuckBattles = result as unknown as Array<{
+        id: number;
+        battle_id: string;
+        agent_a_pubkey: string;
+        agent_b_pubkey: string;
+        agent_a_elo: number;
+        agent_b_elo: number;
+        category: string;
+        game_mode: string;
+        battle_started_at: Date;
+        arena_address: string | null;
+        battling_seconds: number;
+      }>;
+
+      for (const battle of stuckBattles) {
+        console.log(`[MatchmakingService] Found stuck battle: ${battle.battle_id} (battling for ${battle.battling_seconds}s)`);
+        
+        try {
+          // Complete the battle with a random winner (or Agent A as default)
+          console.log(`[MatchmakingService] Auto-completing stuck battle ${battle.battle_id}...`);
+          
+          // Create a minimal ScheduledBattle object for completeBattle
+          const battleObj: ScheduledBattle = {
+            id: battle.id,
+            battle_id: battle.battle_id,
+            agent_a_pubkey: battle.agent_a_pubkey,
+            agent_b_pubkey: battle.agent_b_pubkey,
+            agent_a_elo: battle.agent_a_elo,
+            agent_b_elo: battle.agent_b_elo,
+            category: battle.category,
+            game_mode: battle.game_mode,
+            status: 'battling',
+            matched_at: new Date(),
+            staking_ends_at: new Date(),
+            seconds_until_battle: 0,
+            agent_a_name: 'Agent A',
+            agent_b_name: 'Agent B',
+            total_stake_a: BigInt(0),
+            total_stake_b: BigInt(0),
+            stake_count_a: 0,
+            stake_count_b: 0,
+            arena_address: battle.arena_address,
+          };
+          
+          // Default to Agent A winner on recovery
+          await this.completeBattle(battleObj, 0, true);
+          console.log(`[MatchmakingService] Stuck battle ${battle.battle_id} completed`);
+        } catch (recoveryError) {
+          console.error(`[MatchmakingService] Failed to recover stuck battle ${battle.battle_id}:`, recoveryError);
+        }
+      }
+    } catch (error) {
+      console.error("[MatchmakingService] recoverStuckBattles error:", error);
     }
   }
 
