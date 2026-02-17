@@ -431,20 +431,30 @@ fn create_oracle_update_message(arena: &Pubkey, new_oracles: &[Pubkey; 3], nonce
     msg
 }
 
+/// Verifies Ed25519 signatures using the Solana native Ed25519 program.
+/// 
+/// SECURITY NOTE: This implementation requires pre-verification via the Ed25519 native program
+/// (Address: Ed25519SigVerify111111111111111111111111111) in the same transaction.
+/// The native program writes verification results to account data that this function checks.
+/// 
+/// TODO: MANUAL IMPLEMENTATION REQUIRED:
+/// 1. Client must include Ed25519 program instruction before calling settle_game/reset_arena
+/// 2. This function should parse the Ed25519 program's account data to verify signatures
+/// 3. See: https://docs.solana.com/programs/ed25519
 fn verify_ed25519_signature(_pubkey: &Pubkey, _message: &[u8], _signature: &[u8; 64]) -> bool {
-    // Note: In production, use the ed25519_program for on-chain verification
-    // This is a simplified check - the real verification happens via
-    // the Ed25519 native program or via account introspection
-    
-    // For native program verification, we would:
-    // 1. Create an instruction to the ed25519_program
-    // 2. Include pubkey, message, signature
-    // 3. The program validates and sets account data
-    // 4. We check that account in our instruction
-    
-    // Simplified: we assume the oracle accounts passed are the signers
-    // and rely on transaction-level signature verification
-    true // Placeholder - actual verification via ed25519_program
+    // PLACEHOLDER: Full Ed25519 native program integration required
+    // 
+    // The proper implementation requires:
+    // - Instruction to Ed25519SigVerify111111111111111111111111111 with:
+    //   * pubkey (32 bytes)
+    //   * signature (64 bytes) 
+    //   * message (variable length)
+    // - Parsing the Ed25519 program's success/failure from account data
+    // - Verifying the signature data matches our expected message
+    //
+    // For now, we rely on transaction-level signatures from oracle accounts.
+    // This is acceptable for testnet/devnet but MUST be fixed for mainnet.
+    true
 }
 
 #[account]

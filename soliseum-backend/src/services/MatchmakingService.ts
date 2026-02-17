@@ -67,6 +67,7 @@ export class MatchmakingService {
   private matchmakingTimer: NodeJS.Timeout | null = null;
   private battleStartTimer: NodeJS.Timeout | null = null;
   private countdownTimer: NodeJS.Timeout | null = null;
+  private arenaResetTimer: NodeJS.Timeout | null = null;
   private isProcessing: boolean = false;
   private socketManager: SocketManager | null = null;
   private solanaService: SolanaService;
@@ -112,6 +113,14 @@ export class MatchmakingService {
       this.emitCountdownUpdates().catch(() => {});
     }, 1000);
 
+    // Arena reset timer - periodically reset settled arenas for reuse
+    // Runs every 60 seconds to check for settled arenas with empty vaults
+    this.arenaResetTimer = setInterval(() => {
+      this.resetSettledArenas().catch((err) => {
+        console.error("[MatchmakingService] Arena reset error:", err);
+      });
+    }, 60000);
+
     console.log("[MatchmakingService] Started successfully");
   }
 
@@ -130,6 +139,10 @@ export class MatchmakingService {
     if (this.countdownTimer) {
       clearInterval(this.countdownTimer);
       this.countdownTimer = null;
+    }
+    if (this.arenaResetTimer) {
+      clearInterval(this.arenaResetTimer);
+      this.arenaResetTimer = null;
     }
     console.log("[MatchmakingService] Stopped");
   }
@@ -156,6 +169,50 @@ export class MatchmakingService {
       }
     } catch (error) {
       // Silently fail countdown updates - not critical
+    }
+  }
+
+  /**
+   * Reset settled arenas that have empty vaults for reuse.
+   * This is critical because the oracle can only have one arena PDA.
+   * Runs periodically to clean up completed battles.
+   */
+  private async resetSettledArenas(): Promise<void> {
+    try {
+      // Find completed battles with arena addresses that haven't been reset
+      const result = await db.execute(sql`
+        SELECT DISTINCT arena_address
+        FROM scheduled_battles
+        WHERE status = 'completed'
+        AND arena_address IS NOT NULL
+        AND battle_ended_at < NOW() - INTERVAL '5 minutes'
+        LIMIT 5
+      `);
+
+      const arenas = result as unknown as { arena_address: string }[];
+
+      for (const { arena_address } of arenas) {
+        try {
+          // Check if arena is settled on-chain
+          const arenaState = await this.solanaService.getArenaOnChainState(arena_address);
+          
+          if (arenaState.status === 2) { // Settled
+            console.log(`[MatchmakingService] Resetting settled arena: ${arena_address}`);
+            const txSig = await this.solanaService.resetArenaOnChain(arena_address);
+            console.log(`[MatchmakingService] Arena reset successfully. Tx: ${txSig}`);
+          }
+        } catch (error) {
+          // Vault might not be empty yet (claims pending) - this is expected
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes("Vault must be empty")) {
+            console.log(`[MatchmakingService] Arena ${arena_address} waiting for claims...`);
+          } else {
+            console.error(`[MatchmakingService] Failed to reset arena ${arena_address}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[MatchmakingService] resetSettledArenas error:", error);
     }
   }
 
