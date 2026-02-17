@@ -161,7 +161,10 @@ function StakingPanel({
         });
 
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "Failed to record stake");
+        if (!data.ok) {
+          const errorMsg = data.message || data.error || "Failed to record stake";
+          throw new Error(errorMsg);
+        }
 
         toast.success(`Staked ${amount} SOL on ${selectedAgent === "A" ? battle.agentA.name : battle.agentB.name}!`, {
           id: toastId,
@@ -409,8 +412,8 @@ export default function BattleStation() {
     if (!scheduledBattle) return undefined;
     return {
       id: scheduledBattle.battle_id,
-      gameType: scheduledBattle.game_mode.replace("_", " "),
-      status: apiBattleStatus === "live" ? "live" : apiBattleStatus === "completed" ? "completed" : "pending",
+      gameType: (scheduledBattle.game_mode || scheduledBattle.category || "Unknown").replace("_", " "),
+      status: apiBattleStatus === "live" ? "live" : apiBattleStatus === "completed" ? "concluded" : "pending",
       agentA: {
         id: scheduledBattle.agent_a_pubkey,
         name: scheduledBattle.agent_a_name,

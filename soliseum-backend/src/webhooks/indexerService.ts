@@ -130,7 +130,7 @@ export async function applySettleGame(
   winner: number
 ): Promise<void> {
   const now = new Date();
-  await db
+  const result = await db
     .update(arenas)
     .set({
       status: "Settled",
@@ -138,7 +138,15 @@ export async function applySettleGame(
       endTime: now,
       updatedAt: now,
     })
-    .where(eq(arenas.arenaAddress, arenaAddress));
+    .where(eq(arenas.arenaAddress, arenaAddress))
+    .returning({ id: arenas.id });
+  
+  if (!result || result.length === 0) {
+    console.warn(`[applySettleGame] Arena ${arenaAddress} not found in database`);
+    return;
+  }
+  
+  console.log(`[applySettleGame] Arena ${arenaAddress} successfully marked as Settled (winner: ${winner})`);
 
   // Update agent wins and credibility for the winner
   const [arena] = await db

@@ -226,7 +226,16 @@ async function runBattleInner(payload: StartBattlePayload): Promise<{ winner: nu
     result,
   };
 
+  // Stream battle logs (this includes delays between logs)
   await socketManager.streamBattleLogs(ctx);
+
+  // Ensure minimum battle duration for better UX (wait if simulation was too fast)
+  const MIN_BATTLE_DURATION_MS = 5000; // 5 seconds minimum
+  if (result.durationMs < MIN_BATTLE_DURATION_MS) {
+    const waitTime = MIN_BATTLE_DURATION_MS - result.durationMs;
+    console.log(`[runBattle] Battle completed too quickly (${result.durationMs}ms), waiting ${waitTime}ms for better UX`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
 
   let txSignature: string | undefined;
   try {
@@ -238,10 +247,17 @@ async function runBattleInner(payload: StartBattlePayload): Promise<{ winner: nu
 
   // Update DB immediately so arena moves to Concluded (for testing; webhook also does this)
   const { applySettleGame } = await import("./webhooks/indexerService");
-  await applySettleGame(arenaAddress, result.winner).catch((e) =>
-    console.warn("[runBattle] applySettleGame:", (e as Error).message)
-  );
+  try {
+    await applySettleGame(arenaAddress, result.winner);
+    console.log(`[runBattle] Arena ${arenaAddress} marked as Settled`);
+  } catch (e) {
+    console.error("[runBattle] applySettleGame failed:", e);
+    // Don't throw - battle is still completed, just DB update failed
+  }
+  
+  // Invalidate caches to ensure frontend sees updated status
   invalidateArenaCaches();
+  console.log(`[runBattle] Caches invalidated for arena ${arenaAddress}`);
 
   return { winner: result.winner, txSignature };
 }

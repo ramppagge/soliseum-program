@@ -270,6 +270,7 @@ export async function placeStake(req: Request, res: Response): Promise<void> {
   res.status(result.success ? 200 : 400).json({
     ok: result.success,
     message: result.message,
+    error: result.success ? undefined : result.message, // Include error field for frontend compatibility
   });
 }
 

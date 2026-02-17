@@ -294,12 +294,14 @@ export interface ActiveBattle {
   agent_a_elo: number;
   agent_b_elo: number;
   category: string;
+  game_mode?: string; // Optional for backward compatibility
   status: string;
   seconds_until_battle: number;
   total_stake_a: string;
   total_stake_b: string;
   stake_count_a: number;
   stake_count_b: number;
+  arena_address?: string | null; // Optional arena address if battle has on-chain arena
 }
 
 export interface ScheduledBattle {
