@@ -71,9 +71,51 @@ export class MatchmakingService {
   private isProcessing: boolean = false;
   private socketManager: SocketManager | null = null;
   private solanaService: SolanaService;
+  
+  // Transaction verification cache to avoid redundant RPC calls
+  // Maps tx_signature -> { verified: boolean, timestamp: number }
+  private txVerificationCache = new Map<string, { verified: boolean; timestamp: number }>();
+  private readonly TX_CACHE_TTL_MS = 60000; // 60 second cache TTL
 
   constructor() {
     this.solanaService = new SolanaService();
+  }
+
+  /**
+   * Check transaction verification cache to avoid redundant RPC calls
+   */
+  private getCachedTxVerification(txSignature: string): boolean | null {
+    const cached = this.txVerificationCache.get(txSignature);
+    if (!cached) return null;
+    
+    // Check if cache entry is still valid
+    if (Date.now() - cached.timestamp < this.TX_CACHE_TTL_MS) {
+      return cached.verified;
+    }
+    
+    // Expired - remove from cache
+    this.txVerificationCache.delete(txSignature);
+    return null;
+  }
+
+  /**
+   * Cache transaction verification result
+   */
+  private cacheTxVerification(txSignature: string, verified: boolean): void {
+    this.txVerificationCache.set(txSignature, {
+      verified,
+      timestamp: Date.now(),
+    });
+    
+    // Clean up old entries periodically (simple approach: when cache gets large)
+    if (this.txVerificationCache.size > 1000) {
+      const now = Date.now();
+      for (const [key, value] of this.txVerificationCache.entries()) {
+        if (now - value.timestamp > this.TX_CACHE_TTL_MS) {
+          this.txVerificationCache.delete(key);
+        }
+      }
+    }
   }
 
   /**
@@ -694,10 +736,20 @@ export class MatchmakingService {
       // If tx_signature provided, verify on-chain stake
       if (stake.tx_signature) {
         try {
-          // Verify the transaction exists and is confirmed
-          const connection = this.solanaService.getConnection();
-          const status = await connection.getSignatureStatus(stake.tx_signature);
-          if (!status?.value || status.value.err) {
+          // Check cache first to avoid redundant RPC calls
+          let isVerified = this.getCachedTxVerification(stake.tx_signature);
+          
+          if (isVerified === null) {
+            // Not in cache - verify via RPC
+            const connection = this.solanaService.getConnection();
+            const status = await connection.getSignatureStatus(stake.tx_signature);
+            isVerified = !!status?.value && !status.value.err;
+            
+            // Cache the result
+            this.cacheTxVerification(stake.tx_signature, isVerified);
+          }
+          
+          if (!isVerified) {
             return { success: false, message: "Transaction failed or not found" };
           }
 
