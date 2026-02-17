@@ -624,10 +624,13 @@ export class MatchmakingService {
           `);
           console.log(`[MatchmakingService] Agent statuses updated`);
 
-          // Trigger battle
-          console.log(`[MatchmakingService] Calling triggerBattle...`);
-          await this.triggerBattle(battle);
-          console.log(`[MatchmakingService] Battle triggered successfully!`);
+          // Trigger battle WITHOUT awaiting - runs in background
+          // This prevents blocking the timer loop during long battles
+          console.log(`[MatchmakingService] Triggering battle in background...`);
+          this.triggerBattle(battle).catch((err) => {
+            console.error(`[MatchmakingService] Battle ${battle.battle_id} failed:`, err);
+          });
+          console.log(`[MatchmakingService] Battle triggered (running in background)`);
         } catch (innerError) {
           console.error(`[MatchmakingService] FAILED to start battle ${battle.battle_id}:`, innerError);
         }
