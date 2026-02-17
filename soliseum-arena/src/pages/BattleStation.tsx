@@ -579,7 +579,13 @@ export default function BattleStation() {
                   {battle.gameType}
                 </h1>
                 <p className="text-xs text-muted-foreground">
-                  {isScheduled ? "Scheduled Battle — Stake Now!" : "Live AI Battle"}
+                  {isScheduled 
+                    ? scheduledBattle?.status === "staking" 
+                      ? "Scheduled Battle — Stake Now!" 
+                      : scheduledBattle?.status === "battling"
+                        ? "Battle In Progress"
+                        : "Battle Completed"
+                    : "Live AI Battle"}
                 </p>
               </div>
               {/* Status Badge - uses API status as source of truth */}
@@ -602,8 +608,8 @@ export default function BattleStation() {
               )}
             </div>
 
-            {/* Countdown Display */}
-            {isScheduled && scheduledBattle && scheduledBattle.seconds_until_battle > 0 && (
+            {/* Countdown Display - only show during staking phase */}
+            {isScheduled && scheduledBattle?.status === "staking" && scheduledBattle.seconds_until_battle > 0 && (
               <CountdownTimer seconds={scheduledBattle.seconds_until_battle} />
             )}
           </div>
